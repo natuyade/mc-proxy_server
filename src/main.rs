@@ -41,8 +41,8 @@ async fn main() -> Result<(), std::io::Error> {
                     }
 
                     // 受信したbyteデータを表示, 16進数へ変換,表示(
-                    // read(1) => b"49" -> 31u16,
-                    // read(7) => b"55"-> 37u16
+                    // read(1) => 10進数=49 -> 16進数=31,
+                    // read(7) => 10進数=55 -> 16進数=37
                     // ) (あくまでも流れの説明)
                     Ok(n) => {
                         println!("read {n}bytes data");
