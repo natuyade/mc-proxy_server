@@ -52,6 +52,7 @@ async fn main() -> Result<(), std::io::Error> {
                             Some(first) => {
                                 println!("first byte: {}", *first);
                                 println!("first hex: {:02X}", *first);
+                                println!("first bit: {:08b}",*first);
 
                                 // 0b=後に続くものが二進数であることを表す
                                 // 1000_0000=二進数での128.この状態を最上位ビットが立っている状態ともいう.
@@ -83,8 +84,35 @@ async fn main() -> Result<(), std::io::Error> {
                                 // 0101_0011になる
                                 // firstから値部分を取り出す
                                 let value_part = *first & 0b0111_1111;
-                                println!("value part: {value_part}");
-                                println!("value part hex: {:02X}",value_part);
+
+                                if has_next {
+                                    if let Some(second) = buffer[0..n].get(1) {
+
+                                        println!("second byte: {}",*second);
+                                        println!("second hex: {:02X}",*second);
+                                        println!("second bit: {:08b}",*second);
+
+                                        let value_part_second = *second & 0b0111_1111;
+
+                                        // value の値は8bitを超える可能性があるので
+                                        // 先にi32変換で32bitに変換している.
+                                        //================================
+                                        // first value = 0000_0001 OR演算
+                                        // second value= 0000_0001 << 7
+                                        //               ---------
+                                        //               1_0000001 <-u8を超えてしまう
+                                        //                ↑u8は_まで.
+                                        //================================
+                                        // (VarInt等で扱われる最終的な値の型が32bit)
+                                        // u32変換ではないのは今回のMcJEのVarIntが符号付き32bit整数を扱うため
+                                        let value = (value_part as i32) | (value_part_second as i32) << 7;
+
+                                        println!("value: {value}");
+                                    }
+                                } else {
+                                    let value = value_part;
+                                    println!("value: {value}");
+                                }
                             }
                             None => {
                                 println!("no first byte")
