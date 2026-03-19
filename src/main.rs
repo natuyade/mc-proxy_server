@@ -3,6 +3,12 @@ use tokio::io::AsyncReadExt;
 
 use tokio::net::TcpListener;
 
+#[derive(Debug)]
+enum VarIntError {
+    Incomplete,
+    TooLong,
+}
+
 // 非同期処理を行うためのtokioランタイムを作り, async fn mainを実行できる
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
@@ -31,7 +37,8 @@ async fn main() -> Result<(), std::io::Error> {
                 let mut buffer = [0u8; 1024];
 
                 // read(&mut buffer)で受信したbyte列を可変bufferに書き込む.
-                // read()は一回(!= 1packet)で受け取れるbyteの数は流れによって変わる
+                // read()一回での返り値は,送信側のwrite単位等の
+                // packet境界(1packetの含む値)とは一致しない
                 // 一回で1byteきたり... 一回で100bytesきたり...
                 match socket.read(&mut buffer).await {
 
@@ -47,77 +54,20 @@ async fn main() -> Result<(), std::io::Error> {
                     Ok(n) => {
                         println!("read {n}bytes data");
                         println!("{:?}", &buffer[0..n]);
+                        let start_index = 0;
 
-                        match buffer[..n].get(0) {
-                            Some(first) => {
-                                println!("first byte: {}", *first);
-                                println!("first hex: {:02X}", *first);
-                                println!("first bit: {:08b}",*first);
-
-                                // 0b=後に続くものが二進数であることを表す
-                                // 1000_0000=二進数での128.この状態を最上位ビットが立っている状態ともいう.
-
-                                // VarInt等の世界で8bitの最上位bitは,主にバイトの続きがあるかを表し
-                                // 1で継続,0が最終バイト.を意味する
-                                // 以降7bitは実データを表す
-
-                                // 例えばfirstが1101_0011だとして&(bit AND演算)で
-                                // 最上位bitだけが立ったマスク(1000_0000)と比較し,
-                                // 1101_0011
-                                // 1000_0000
-                                // ---------
-                                // 1000_0000になる
-
-                                // 分かりやすくすると
-                                // (0 & 0 = 0), (1 & 0 = 0), (1 & 1 = 1)
-
-                                // そうすればfirstの最上位bitが立っていることが判明し
-                                // 1000_0000(128) != 0 でtrueになる.
-                                // 最上位bitが立っていたら(0でなければ)次のバイトが存在し継続するというboolになる
-                                let has_next = (*first & 0b1000_0000) != 0;
-                                println!("has next byte: {has_next}");
-
-                                // こっちは逆に最上位以外の下位7bitを取り出し.
-                                // 1101_0011
-                                // 0111_1111
-                                // ---------
-                                // 0101_0011になる
-                                // firstから値部分を取り出す
-                                let value_part = *first & 0b0111_1111;
-
-                                if has_next {
-                                    if let Some(second) = buffer[0..n].get(1) {
-
-                                        println!("second byte: {}",*second);
-                                        println!("second hex: {:02X}",*second);
-                                        println!("second bit: {:08b}",*second);
-
-                                        let value_part_second = *second & 0b0111_1111;
-
-                                        // value の値は8bitを超える可能性があるので
-                                        // 先にi32変換で32bitに変換している.
-                                        //================================
-                                        // first value = 0000_0001 OR演算
-                                        // second value= 0000_0001 << 7
-                                        //               ---------
-                                        //               1_0000001 <-u8を超えてしまう
-                                        //                ↑u8は_まで.
-                                        //================================
-                                        // (VarInt等で扱われる最終的な値の型が32bit)
-                                        // u32変換ではないのは今回のMcJEのVarIntが符号付き32bit整数を扱うため
-                                        let value = (value_part as i32) | (value_part_second as i32) << 7;
-
-                                        println!("value: {value}");
-                                    }
-                                } else {
-                                    let value = value_part;
-                                    println!("value: {value}");
-                                }
+                        match read_varint_from_buffer(&buffer[0..n], start_index) {
+                            Ok((value, used)) => {
+                                println!("get value: {value}");
+                                println!("used {used}bytes");
                             }
-                            None => {
-                                println!("no first byte")
+                            Err(VarIntError::Incomplete) => {
+                                println!("varint is incomplete")
                             }
-                        }
+                            Err(VarIntError::TooLong) => {
+                                println!("varint is too long")
+                            }
+                        };
                     }
 
                     Err(e) => {
@@ -127,4 +77,37 @@ async fn main() -> Result<(), std::io::Error> {
             }
         );
     }
+}
+
+fn read_varint_from_buffer(buf: &[u8], index: usize) -> Result<(i32, usize), VarIntError>{
+
+    let mut value = 0i32;
+
+    // MinecraftJEでのVarIntはi32を可変長で表すため最大5bytesまでに制限
+    for i in 0..5 {
+
+        // byteが存在すれば参照外した実体を返す
+        let byte = match buf.get(index + i) {
+            Some(byte) => *byte,
+            None => return Err(VarIntError::Incomplete),
+        };
+        println!("byte{i} = {byte}");
+        println!("byte{i} hex = {:02X}", byte);
+        println!("start {i}byte loop");
+
+        let value_part = byte & 0b0111_1111;
+        println!("{i}byte value part: {value_part}");
+
+        let has_next = (byte & 0b1000_0000) != 0;
+
+        value |= (value_part as i32) << (7 * i);
+        println!("value bits: {:b}", value);
+
+        if !has_next {
+            return Ok((value, i + 1));
+        }
+        println!("{i}byte has next");
+    }
+
+    Err(VarIntError::TooLong)
 }
