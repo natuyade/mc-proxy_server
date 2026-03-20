@@ -1,35 +1,19 @@
+use std::io::ErrorKind;
+use std::str::from_utf8;
 // 非同期読み書きメソッドを使うための拡張機能
 use tokio::io::AsyncReadExt;
 
-use tokio::net::TcpListener;
-
-#[derive(Debug)]
-enum VarIntError {
-    Incomplete,
-    TooLong,
-}
-
-enum ParsePacketError {
-    VarInt(VarIntError),
-    InvalidLength,
-    InvalidUtf8,
-    CouldntHandShake,
-}
-
-struct PacketHead {
-    packet_length: i32,
-    packet_id: i32,
-    length_field_used: usize,
-    head_used: usize,
-}
+use tokio::net::{TcpListener, TcpStream};
 
 struct HandShakePayload {
     protocol_version: i32,
     server_address: String,
     server_port: u16,
     next_state: i32,
-    payload_used: usize,
+    used_bytes: usize,
 }
+
+const MAX_PACKET_SIZE: usize = 1024 * 1024;
 
 // 非同期処理を行うためのtokioランタイムを作り, async fn mainを実行できる
 #[tokio::main]
@@ -56,222 +40,131 @@ async fn main() -> Result<(), std::io::Error> {
         // 今回ならaccept()を受けたらその接続先との処理をspawnで継続させつつ
         // すぐに次の接続を待ち受けれる
         tokio::spawn(
-            // moveで使用する変数を所有権ごと受けとり処理する.
-            // loopで作られた変数は進むたびに初期化されてしまい,
-            // 外(socketなど)の変数を借用しつづける事ができないため
             async move {
 
-                // TCPの世界では文字列ではなくbyte列を扱う
-                let mut buffer = [0u8; 1024];
+                let packet_data = match read_packet_data(&mut socket).await {
+                    Ok(d) => d,
+                    Err(e) => { return println!("{e}") }
+                };
 
-                // read(&mut buffer)で受信したbyte列を可変bufferに書き込む.
-                // read()一回での返り値は,送信側のwrite単位等の
-                // packet境界(1packetの含む値)とは一致しない
-                // 一回で1byteきたり... 一回で100bytesきたり...
-                match socket.read(&mut buffer).await {
+                let (packet_id, id_used) = match read_varint_from_packet(&packet_data) {
+                    Ok(id) => {id}
+                    Err(e) => { return println!("{e}") }
+                };
+                println!();
+                if packet_id != 0x00 {
+                    println!("This is not handshake");
+                    println!();
+                    return;
+                }
+                println!("Handshake!^_^@@^.^");
+                println!();
 
-                    // 0は接続が切れた時の処理(相手が切断したり)
-                    Ok(0) => {
-                        println!("--------------------------------");
-                        println!("client disconnected {addr}");
-                        println!("--------------------------------");
-                    }
+                let payload = match parse_handshake_payload(&packet_data[id_used..]) {
+                    Ok(p) => p,
+                    Err(e) => { return println!("{e}") }
+                };
 
-                    // 受信したbyteデータを表示, 先頭に1byte存在していれば16進数へ変換,表示(
-                    // read(1) => 10進数=49 -> 16進数=31,
-                    // read(7) => 10進数=55 -> 16進数=37
-                    // ) (あくまでも流れの説明)
-                    Ok(n) => {
-                        println!("read {n}bytes data:");
-                        println!("{:?}", &buffer[0..n]);
+                println!("payload used {}bytes", payload.used_bytes);
 
-                        let buf = &buffer[0..n];
-
-                        let head = match parse_packet_head(buf) {
-                            Ok(h) => h,
-                            Err(ParsePacketError::VarInt(e)) => return println!("parse packet error: {:?}", e),
-                            Err(ParsePacketError::InvalidLength) => return println!("parse packet error: InvalidLength"),
-                            Err(ParsePacketError::InvalidUtf8) => return println!("parse packet error: InvalidUtf8"),
-                            Err(ParsePacketError::CouldntHandShake) => return println!("parse packet error: CouldntHandShake"),
-                        };
-
-                        // Packetの列の長さを表す(PacketLength自身を除いた長さ)
-                        println!("packet length: {}", head.packet_length);
-                        // id == 0x00: HandShake
-                        // HandShake:
-                        // (データを送信する前に双方ともとあるパケットをやり取りし
-                        // 相互の接続テストと通信準備を整えている.
-                        // その名の通り)
-                        println!("packet id: {}", head.packet_id);
-                        println!("used bytes: {}", head.head_used);
-
-                        // 受信したpacket dataの長さを可視化 (buf.len - length data) = packet data len
-                        let packet_data_received = buf.len().saturating_sub(head.length_field_used);
-
-                        // lengthが負の値でも0でもないという保障
-                        if head.packet_length < 0 { return println!("invalid packet length") }
-                        if head.packet_length == 0 { return println!("packet data is empty") }
-
-                        // buffer内のdataの長さと実際のdataの長さの比較
-                        // (受信したデータを全て解析できたか)
-                        if packet_data_received < head.packet_length as usize {
-                            return println!("packet not fully received yet")
-                        }
-
-                        // payload length, payload data取得
-                        //
-                        //  1byte- Protocol Version: VarInt
-                        //      = payload[payload_start],
-                        //          1.21.1 = [134, 6](774)
-                        //
-                        //  2byte- ServerAddressLength: VarInt
-                        //      = payload[payload_start+1],
-                        //          [1, 2, 7, ., 0, ., 0, ., 1] = [9](len: 9)
-                        //
-                        //  3byte- ServerAddress: String
-                        //      = payload[(payload_start+2)..ServerAddressLength],
-                        //          Address = [49, 50, 55, 46, 48, 46, 48, 46 ,49](127.0.0.1)
-                        //
-                        //  4byte- ServerPort: u16
-                        //      = payload[(payload_start+2)+ServerAddressLength],
-                        //          Port = [99, 222](25566)
-                        //
-                        //  5byte- NextState: VarInt
-                        //      = payload[(payload_start+2)+ServerAddressLength+1],
-                        //          state = [1(status)] or [2(login)] or [3(transfer)]
-                        let payload_start = head.head_used;
-                        let payload_bytes = &buf[payload_start..];
-                        println!("payload bytes: {:?}", payload_bytes);
-                        println!("payload bytes total: {}", payload_bytes.len());
-
-                        let payload = match parse_packet_payload(payload_bytes) {
-                            Ok(p) => p,
-                            Err(ParsePacketError::VarInt(e)) => return println!("parse payload error: {:?}", e),
-                            Err(ParsePacketError::InvalidLength) => return println!("parse payload error: InvalidLength"),
-                            Err(ParsePacketError::InvalidUtf8) => return println!("parse payload error: InvalidUtf8"),
-                            Err(ParsePacketError::CouldntHandShake) => return println!("parse payload error: CouldntHandShake"),
-                        };
-
-                        println!("parse payload used bytes: {}", payload.payload_used);
-
-                        println!("~~~~~~~~~~~~~~~~");
-                        println!("・Payload Data");
-                        println!("- protocol_version: {}", payload.protocol_version);
-                        println!("- server_address: {}", payload.server_address);
-                        println!("- server_port: {}", payload.server_port);
-                        match payload.next_state {
-                            1 => println!("- next_state: status"),
-                            2 => println!("- next_state: login"),
-                            3 => println!("- next_state: transfer"),
-                            _ => println!("- next_state: unknown"),
-                        }
-                        println!("~~~~~~~~~~~~~~~~\n");
-                    }
-
-                    Err(e) => {
-                        eprintln!("read error {addr}: {e}");
-                    }
+                println!("protocol version: {}", payload.protocol_version);
+                println!("server address: {}", payload.server_address);
+                println!("server port: {}", payload.server_port);
+                match payload.next_state {
+                    1 => println!("next state: {} = status", payload.next_state),
+                    2 => println!("next state: {} = login", payload.next_state),
+                    3 => println!("next state: {} = transfer", payload.next_state),
+                    _ => println!("next state: {} = unknown", payload.next_state),
                 }
             }
         );
     }
 }
 
-fn read_varint_from_buffer(buf: &[u8], index: usize) -> Result<(i32, usize), VarIntError>{
+// server間でioしているためasync化
+async fn read_varint_from_stream(stream: &mut TcpStream) -> std::io::Result<i32> {
 
-    let mut value = 0i32;
+    let mut result = 0i32;
 
-    // MinecraftJEでのVarIntはi32を可変長で表すため最大5bytesまでに制限
+    // VarIntは最大5bytesなだけであって, 確定要素ではないためfor return
     for i in 0..5 {
+        let mut part = [0u8; 1];
 
-        // byteが存在すれば参照外した実体を返す
-        let byte = match buf.get(index + i) {
-            Some(byte) => *byte,
-            None => return Err(VarIntError::Incomplete),
-        };
+        stream.read_exact(&mut part).await?;
+        let byte = part[0];
 
-        let value_part = byte & 0b0111_1111;
+        let value = byte & 0b0111_1111;
 
-        let has_next = (byte & 0b1000_0000) != 0;
+        result |= (value as i32) << (7 * i);
 
-        value |= (value_part as i32) << (7 * i);
-
-        if !has_next {
-            return Ok((value, i + 1));
+        if byte & 0b1000_0000 == 0 {
+            return Ok(result)
         }
     }
-
-    Err(VarIntError::TooLong)
+    // 6byte目に到達したならエラー
+    Err(std::io::Error::new(ErrorKind::InvalidData, "Too Long VarInt"))
 }
 
-fn parse_packet_head(buf: &[u8]) -> Result<PacketHead, ParsePacketError> {
+async fn read_packet_data(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
 
-    let mut index = 0;
+    let packet_length = read_varint_from_stream(stream).await?;
 
-    // match result
-    let (packet_length, length_field_used) = read_varint_from_buffer(buf, index).map_err(ParsePacketError::VarInt)?;
-    index += length_field_used;
-
-    let (packet_id, id_field_used) = read_varint_from_buffer(buf, index).map_err(ParsePacketError::VarInt)?;
-    index += id_field_used;
-
-    println!();
-    if packet_id != 0 {
-        println!("This is not handshake");
-        println!();
-        return Err(ParsePacketError::CouldntHandShake)
+    // 不正なpacket対策
+    if packet_length < 0 {
+        return Err(std::io::Error::new(ErrorKind::InvalidData, "negative packet length"))
     }
-    println!("Handshake!^_^@@^.^");
-    println!();
+    if packet_length as usize > MAX_PACKET_SIZE {
+        return Err(std::io::Error::new(ErrorKind::InvalidData, "packet too large"))
+    }
 
-    let packet_data = PacketHead {
-        packet_length,
-        packet_id,
-        length_field_used,
-        head_used: index,
-    };
+    // 範囲指定でパケットを取得
+    let mut packet_data: Vec<u8> = vec![0u8; packet_length as usize];
+    stream.read_exact(&mut packet_data).await?;
 
     Ok(packet_data)
 }
 
-fn parse_packet_payload(payload: &[u8]) -> Result<HandShakePayload, ParsePacketError> {
+fn parse_handshake_payload(payload_data: &[u8]) -> std::io::Result<HandShakePayload> {
 
     let mut index = 0;
 
-    let (protocol_version, version_field_used) = read_varint_from_buffer(payload, index).map_err(ParsePacketError::VarInt)?;
-    index += version_field_used;
+    // read_varintで範囲チェックを兼用しているため,それ以外の型では範囲を先に見る
+    // varint
+    let (protocol_version, version_used) = read_varint_from_packet(&payload_data[index..])?;
+    index += version_used;
 
-    let (address_length, address_length_used) = read_varint_from_buffer(payload, index).map_err(ParsePacketError::VarInt)?;
-    index += address_length_used;
+    // varint
+    let (address_length, length_used) = read_varint_from_packet(&payload_data[index..])?;
+    index += length_used;
 
-    // 負の値チェック
+    // server_address用範囲チェック
+    // usize変換するので, 負値i32だった場合のoverflowを防ぐ
     if address_length < 0 {
-        return Err(ParsePacketError::InvalidLength)
+        return Err(std::io::Error::new(ErrorKind::InvalidData, "negative address length"))
     }
-    // 範囲チェック(usize変換でのoverflow等対策になるのと
-    // 複数のbyte列を読む必要があり,途中で切れてる可能性があるため)
-    if payload.len() < index + address_length as usize {
-        return Err(ParsePacketError::InvalidLength)
+    if payload_data.len() < index + address_length as usize {
+        return Err(std::io::Error::new(ErrorKind::InvalidData, "payload data(address_parts) didn't have enough space"))
     }
+    let address_parts = &payload_data[index..index + address_length as usize];
+    index += address_parts.len();
 
-    // String変換, utf8変換
-    let address_bytes = &payload[index..index + address_length as usize];
-    let server_address = match std::str::from_utf8(address_bytes) {
+    let server_address = match from_utf8(address_parts) {
         Ok(s) => s.to_string(),
-        Err(_) => return Err(ParsePacketError::InvalidUtf8),
+        Err(e) => {
+            println!("{e}");
+            return Err(std::io::Error::new(ErrorKind::InvalidData, "Couldn't convert to string from &str"))
+        }
     };
-    index += address_length as usize;
 
-    // portは2bytes固定のUnsigned Short(u16)
-    // この先2byteあるか範囲チェック(途中で切れる可能性があるため)
-    if payload.len() < index + 2 {
-        return Err(ParsePacketError::InvalidLength)
+    // server_port用範囲チェック
+    if payload_data.len() < index + 2 {
+        return Err(std::io::Error::new(ErrorKind::InvalidData, "payload data(server_port) didn't have enough space"))
     }
-    // big-endianなので順序は最初のbyteが上位になる
-    let server_port = (payload[index + 1] as u16) | (payload[index] as u16) << 8;
+    let server_port = (payload_data[index + 1] as u16) | (payload_data[index] as u16) << 8;
     index += 2;
 
-    let (next_state, next_state_used) = read_varint_from_buffer(payload, index).map_err(ParsePacketError::VarInt)?;
+    // varint
+    let (next_state, next_state_used) = read_varint_from_packet(&payload_data[index..])?;
     index += next_state_used;
 
     let packet_payload = HandShakePayload {
@@ -279,8 +172,35 @@ fn parse_packet_payload(payload: &[u8]) -> Result<HandShakePayload, ParsePacketE
         server_address,
         server_port,
         next_state,
-        payload_used: index,
+        used_bytes: index,
     };
 
     Ok(packet_payload)
+}
+
+fn read_varint_from_packet(data: &[u8]) -> std::io::Result<(i32, usize)> {
+
+    let mut result = 0i32;
+    let mut used = 0usize;
+
+    for i in 0..5 {
+
+        if data.len() <= i {
+            return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "Incomplete VarInt"))
+        }
+
+        let byte = data[i];
+
+        let value = byte & 0b0111_1111;
+
+        result |= (value as i32) << (7 * i);
+
+        used += 1;
+
+        if byte & 0b1000_0000 == 0 {
+            return Ok((result, used))
+        }
+    }
+
+    Err(std::io::Error::new(ErrorKind::InvalidData, "Too Long VarInt"))
 }
