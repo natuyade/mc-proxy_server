@@ -1,15 +1,46 @@
-use std::io::ErrorKind;
-use std::str::from_utf8;
-// 非同期読み書きメソッドを使うための拡張機能
-use tokio::io::AsyncReadExt;
+mod reader_varint_from_stream;
+use reader_varint_from_stream::read_varint_from_stream;
 
+mod reader_packet_data;
+use reader_packet_data::read_packet_data;
+
+mod reader_varint_from_packet;
+use reader_varint_from_packet::read_varint_from_packet;
+mod parser_handshake_payload;
+use parser_handshake_payload::parse_handshake_payload;
+
+mod parser_status_ping_payload;
+use parser_status_ping_payload::parse_status_ping_payload;
+
+mod parser_login_payload;
+use parser_login_payload::parse_login_start_payload_with_mcid_uuid;
+
+mod format_to_hex;
+use format_to_hex::format_hex;
+
+// 非同期読み書きメソッドを使うための拡張機能
 use tokio::net::{TcpListener, TcpStream};
+
+#[derive(Debug, Copy, Clone)]
+enum ConnectionState {
+    HandShaking,
+    Status,
+    Login,
+    Transfer,
+    Unknown,
+}
 
 struct HandShakePayload {
     protocol_version: i32,
     server_address: String,
     server_port: u16,
     next_state: i32,
+    used_bytes: usize,
+}
+
+struct LoginStatePayload {
+    minecraft_id: String,
+    uuid: uuid::Uuid,
     used_bytes: usize,
 }
 
@@ -31,7 +62,7 @@ async fn main() -> Result<(), std::io::Error> {
         // listenerが待ち受けしているbindされたアドレスへ接続された際にlistener.accept()で
         // (TcpStream:それぞれの接続元と個別で読み書きするためのハンドル(ストリーム),
         // SocketAddr:接続元のアドレス)が返される
-        let (mut socket, addr) = listener.accept().await?;
+        let (socket, addr) = listener.accept().await?;
         println!("--------------------------------");
         println!("client connected {addr}");
         println!("--------------------------------");
@@ -41,166 +72,173 @@ async fn main() -> Result<(), std::io::Error> {
         // すぐに次の接続を待ち受けれる
         tokio::spawn(
             async move {
-
-                let packet_data = match read_packet_data(&mut socket).await {
-                    Ok(d) => d,
-                    Err(e) => { return println!("{e}") }
-                };
-
-                let (packet_id, id_used) = match read_varint_from_packet(&packet_data) {
-                    Ok(id) => {id}
-                    Err(e) => { return println!("{e}") }
-                };
-                println!();
-                if packet_id != 0x00 {
-                    println!("This is not handshake");
-                    println!();
-                    return;
-                }
-                println!("Handshake!^_^@@^.^");
-                println!();
-
-                let payload = match parse_handshake_payload(&packet_data[id_used..]) {
-                    Ok(p) => p,
-                    Err(e) => { return println!("{e}") }
-                };
-
-                println!("payload used {}bytes", payload.used_bytes);
-
-                println!("protocol version: {}", payload.protocol_version);
-                println!("server address: {}", payload.server_address);
-                println!("server port: {}", payload.server_port);
-                match payload.next_state {
-                    1 => println!("next state: {} = status", payload.next_state),
-                    2 => println!("next state: {} = login", payload.next_state),
-                    3 => println!("next state: {} = transfer", payload.next_state),
-                    _ => println!("next state: {} = unknown", payload.next_state),
-                }
+                // socketはhandleに独占させて扱うので参照させるのではなく所有させる
+                handle_client(socket).await;
+                println!("client disconnected");
             }
         );
     }
 }
 
-// server間でioしているためasync化
-async fn read_varint_from_stream(stream: &mut TcpStream) -> std::io::Result<i32> {
+async fn handle_client(mut stream: TcpStream) {
 
-    let mut result = 0i32;
+    let mut state = ConnectionState::HandShaking;
 
-    // VarIntは最大5bytesなだけであって, 確定要素ではないためfor return
-    for i in 0..5 {
-        let mut part = [0u8; 1];
+    loop {
 
-        stream.read_exact(&mut part).await?;
-        let byte = part[0];
+        let packet_data = match read_packet_data(&mut stream).await {
+            Ok(Some(data)) => data,
+            Ok(None) => break println!("connection closed normally before next packet"),
+            Err(e) => break println!("invalid data: {e}"),
+        };
 
-        let value = byte & 0b0111_1111;
+        let (packet_id, id_used) = match read_varint_from_packet(&packet_data) {
+            Ok(id) => id,
+            Err(e) => break println!("packet id parse error {e}"),
+        };
 
-        result |= (value as i32) << (7 * i);
+        let payload_len = packet_data.len().saturating_sub(id_used);
 
-        if byte & 0b1000_0000 == 0 {
-            return Ok(result)
+        match state {
+
+            ConnectionState::HandShaking => {
+
+                println!();
+                if packet_id == 0x00 {
+
+                    println!("Handshake!^_^@@^.^");
+                    println!();
+                    println!("handshake payload_len: {payload_len}");
+
+                    let payload_slice = &packet_data[id_used..];
+
+                    match parse_handshake_payload(payload_slice) {
+
+                        Ok(payload) =>{
+
+                            // 読み終わったpayloadに余剰バイトがあるときの未読領域が存在するか確認
+                            if payload.used_bytes != payload_slice.len(){
+                                println!("warning:\npayload has trailing bytes\n[ total: {}, used: {} ]", payload_slice.len(), payload.used_bytes);
+                            }
+
+                            println!();
+                            println!("HandShake payload");
+                            println!("protocol version: {}", payload.protocol_version);
+                            println!("server address: {}", payload.server_address);
+                            println!("server port: {}", payload.server_port);
+
+                            state = match payload.next_state {
+                                1 => {
+                                    println!("next state: {} = status", payload.next_state);
+                                    ConnectionState::Status
+                                }
+                                2 => {
+                                    println!("next state: {} = login", payload.next_state);
+                                    ConnectionState::Login
+                                }
+                                3 => {
+                                    println!("next state: {} = transfer", payload.next_state);
+                                    ConnectionState::Transfer
+                                }
+                                _ => {
+                                    println!("next state: {} = unknown", payload.next_state);
+                                    ConnectionState::Unknown
+                                }
+                            };
+                        }
+
+                        Err(e) => break println!("handshake parse error: {e}"),
+                    };
+                } else {
+                    println!("unexpected packet in handshaking");
+                    println!();
+                    break;
+                }
+            }
+
+            ConnectionState::Status => {
+                println!();
+                println!("Status state packet observed: id = 0x{packet_id:02X}");
+                println!("login start payload_len: {payload_len}");
+
+                match packet_id {
+                    0x00 => {
+                        println!("Status Request packet candidate");
+                        println!();
+
+                        let payload_slice = &packet_data[id_used..];
+
+                        println!("payload: {}bytes", payload_slice.len());
+
+                        if payload_slice.is_empty() {
+                            println!("valid Status Request payload length")
+                        } else {
+                            println!("invalid Status Request payload length: expected 0, got {}", payload_slice.len());
+                            break;
+                        }
+                    }
+                    0x01 => {
+                        println!("Status Ping packet candidate");
+                        println!();
+
+                        let payload_slice = &packet_data[id_used..];
+
+                        println!("payload: {}bytes", payload_slice.len());
+
+                        if payload_slice.len() == 8 {
+                            println!("valid Status Ping payload length")
+                        } else {
+                            println!("invalid Status Ping payload length: expected 8, got {}", payload_slice.len());
+                            break;
+                        }
+
+                        let payload = match parse_status_ping_payload(&payload_slice) {
+                            Ok(p) => p,
+                            Err(e) => break println!("status ping parse error: {e}"),
+                        };
+                        println!("{payload}")
+                    }
+                    _ => {
+                        println!("Unknown packet in Status state");
+                        println!();
+                    }
+                }
+            }
+            ConnectionState::Login => {
+                println!();
+                println!("Login state packet observed: id = 0x{packet_id:02X} packet_data_len = {}", packet_data.len());
+
+                let payload_slice = &packet_data[id_used..];
+
+                let payload_hex = format_hex(payload_slice);
+
+                println!("payload: {payload_len}bytes");
+
+                println!("payload_hex: {payload_hex}");
+
+                match parse_login_start_payload_with_mcid_uuid(payload_slice) {
+                    Ok(payload) => {
+
+                        println!();
+                        println!("Login start payload");
+                        println!("payload_data: {}", payload.minecraft_id);
+                        println!("payload_data: {}", payload.uuid);
+
+                    }
+                    Err(_) => break
+                };
+            }
+            ConnectionState::Transfer => {
+                println!();
+                println!("Transfer state packet observed: id = 0x{packet_id:02X} packet_data_len = {}", packet_data.len());
+                println!("payload_len: {payload_len}");
+            }
+            ConnectionState::Unknown => {
+                println!();
+                println!("Unknown state packet observed: id = 0x{packet_id:02X} packet_data_len = {}", packet_data.len());
+                println!("payload_len: {payload_len}");
+            }
         }
+        println!();
     }
-    // 6byte目に到達したならエラー
-    Err(std::io::Error::new(ErrorKind::InvalidData, "Too Long VarInt"))
-}
-
-async fn read_packet_data(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
-
-    let packet_length = read_varint_from_stream(stream).await?;
-
-    // 不正なpacket対策
-    if packet_length < 0 {
-        return Err(std::io::Error::new(ErrorKind::InvalidData, "negative packet length"))
-    }
-    if packet_length as usize > MAX_PACKET_SIZE {
-        return Err(std::io::Error::new(ErrorKind::InvalidData, "packet too large"))
-    }
-
-    // 範囲指定でパケットを取得
-    let mut packet_data: Vec<u8> = vec![0u8; packet_length as usize];
-    stream.read_exact(&mut packet_data).await?;
-
-    Ok(packet_data)
-}
-
-fn parse_handshake_payload(payload_data: &[u8]) -> std::io::Result<HandShakePayload> {
-
-    let mut index = 0;
-
-    // read_varintで範囲チェックを兼用しているため,それ以外の型では範囲を先に見る
-    // varint
-    let (protocol_version, version_used) = read_varint_from_packet(&payload_data[index..])?;
-    index += version_used;
-
-    // varint
-    let (address_length, length_used) = read_varint_from_packet(&payload_data[index..])?;
-    index += length_used;
-
-    // server_address用範囲チェック
-    // usize変換するので, 負値i32だった場合のoverflowを防ぐ
-    if address_length < 0 {
-        return Err(std::io::Error::new(ErrorKind::InvalidData, "negative address length"))
-    }
-    if payload_data.len() < index + address_length as usize {
-        return Err(std::io::Error::new(ErrorKind::InvalidData, "payload data(address_parts) didn't have enough space"))
-    }
-    let address_parts = &payload_data[index..index + address_length as usize];
-    index += address_parts.len();
-
-    let server_address = match from_utf8(address_parts) {
-        Ok(s) => s.to_string(),
-        Err(e) => {
-            println!("{e}");
-            return Err(std::io::Error::new(ErrorKind::InvalidData, "Couldn't convert to string from &str"))
-        }
-    };
-
-    // server_port用範囲チェック
-    if payload_data.len() < index + 2 {
-        return Err(std::io::Error::new(ErrorKind::InvalidData, "payload data(server_port) didn't have enough space"))
-    }
-    let server_port = (payload_data[index + 1] as u16) | (payload_data[index] as u16) << 8;
-    index += 2;
-
-    // varint
-    let (next_state, next_state_used) = read_varint_from_packet(&payload_data[index..])?;
-    index += next_state_used;
-
-    let packet_payload = HandShakePayload {
-        protocol_version,
-        server_address,
-        server_port,
-        next_state,
-        used_bytes: index,
-    };
-
-    Ok(packet_payload)
-}
-
-fn read_varint_from_packet(data: &[u8]) -> std::io::Result<(i32, usize)> {
-
-    let mut result = 0i32;
-    let mut used = 0usize;
-
-    for i in 0..5 {
-
-        if data.len() <= i {
-            return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "Incomplete VarInt"))
-        }
-
-        let byte = data[i];
-
-        let value = byte & 0b0111_1111;
-
-        result |= (value as i32) << (7 * i);
-
-        used += 1;
-
-        if byte & 0b1000_0000 == 0 {
-            return Ok((result, used))
-        }
-    }
-
-    Err(std::io::Error::new(ErrorKind::InvalidData, "Too Long VarInt"))
 }
