@@ -15,8 +15,17 @@ use parser_status_ping_payload::parse_status_ping_payload;
 mod parser_login_payload;
 use parser_login_payload::parse_login_start_payload_with_mcid_uuid;
 
-mod format_to_hex;
-use format_to_hex::format_hex;
+mod handler_status_state_packet;
+use handler_status_state_packet::handle_status_packet;
+
+mod handler_login_packet;
+use handler_login_packet::handle_login_packet;
+
+mod handler_handshaking_packet;
+use handler_handshaking_packet::handle_handshaking_packet;
+
+//mod format_to_hex;
+//use format_to_hex::format_hex;
 
 // 非同期読み書きメソッドを使うための拡張機能
 use tokio::net::{TcpListener, TcpStream};
@@ -42,6 +51,11 @@ struct LoginStatePayload {
     minecraft_id: String,
     uuid: uuid::Uuid,
     used_bytes: usize,
+}
+
+struct ConnectionContext {
+    state: ConnectionState,
+    protocol_version: Option<i32>,
 }
 
 const MAX_PACKET_SIZE: usize = 1024 * 1024;
@@ -73,170 +87,59 @@ async fn main() -> Result<(), std::io::Error> {
         tokio::spawn(
             async move {
                 // socketはhandleに独占させて扱うので参照させるのではなく所有させる
-                handle_client(socket).await;
+                match handle_client(socket).await {
+                    Ok(_) => {}
+                    Err(e) => println!("{e}")
+                };
                 println!("client disconnected");
             }
         );
     }
 }
 
-async fn handle_client(mut stream: TcpStream) {
+async fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
 
-    let mut state = ConnectionState::HandShaking;
+    let mut ctx = ConnectionContext {
+        state: ConnectionState::HandShaking,
+        protocol_version: None,
+    };
 
     loop {
 
         let packet_data = match read_packet_data(&mut stream).await {
             Ok(Some(data)) => data,
-            Ok(None) => break println!("connection closed normally before next packet"),
-            Err(e) => break println!("invalid data: {e}"),
+            Ok(None) => {
+                println!("connection closed normally before next packet");
+                return Ok(())
+            }
+            Err(e) => {
+                return Err(e);
+            }
         };
 
-        let (packet_id, id_used) = match read_varint_from_packet(&packet_data) {
-            Ok(id) => id,
-            Err(e) => break println!("packet id parse error {e}"),
-        };
+        let (packet_id, id_used) = read_varint_from_packet(&packet_data)?;
 
-        let payload_len = packet_data.len().saturating_sub(id_used);
+        let payload_slice = &packet_data[id_used..];
+        println!("payload: {}bytes", payload_slice.len());
 
-        match state {
+        match ctx.state {
 
             ConnectionState::HandShaking => {
-
-                println!();
-                if packet_id == 0x00 {
-
-                    println!("Handshake!^_^@@^.^");
-                    println!();
-                    println!("handshake payload_len: {payload_len}");
-
-                    let payload_slice = &packet_data[id_used..];
-
-                    match parse_handshake_payload(payload_slice) {
-
-                        Ok(payload) =>{
-
-                            // 読み終わったpayloadに余剰バイトがあるときの未読領域が存在するか確認
-                            if payload.used_bytes != payload_slice.len(){
-                                println!("warning:\npayload has trailing bytes\n[ total: {}, used: {} ]", payload_slice.len(), payload.used_bytes);
-                            }
-
-                            println!();
-                            println!("HandShake payload");
-                            println!("protocol version: {}", payload.protocol_version);
-                            println!("server address: {}", payload.server_address);
-                            println!("server port: {}", payload.server_port);
-
-                            state = match payload.next_state {
-                                1 => {
-                                    println!("next state: {} = status", payload.next_state);
-                                    ConnectionState::Status
-                                }
-                                2 => {
-                                    println!("next state: {} = login", payload.next_state);
-                                    ConnectionState::Login
-                                }
-                                3 => {
-                                    println!("next state: {} = transfer", payload.next_state);
-                                    ConnectionState::Transfer
-                                }
-                                _ => {
-                                    println!("next state: {} = unknown", payload.next_state);
-                                    ConnectionState::Unknown
-                                }
-                            };
-                        }
-
-                        Err(e) => break println!("handshake parse error: {e}"),
-                    };
-                } else {
-                    println!("unexpected packet in handshaking");
-                    println!();
-                    break;
-                }
+                ctx = handle_handshaking_packet(packet_id, payload_slice)?;
             }
-
             ConnectionState::Status => {
-                println!();
-                println!("Status state packet observed: id = 0x{packet_id:02X}");
-                println!("login start payload_len: {payload_len}");
-
-                match packet_id {
-                    0x00 => {
-                        println!("Status Request packet candidate");
-                        println!();
-
-                        let payload_slice = &packet_data[id_used..];
-
-                        println!("payload: {}bytes", payload_slice.len());
-
-                        if payload_slice.is_empty() {
-                            println!("valid Status Request payload length")
-                        } else {
-                            println!("invalid Status Request payload length: expected 0, got {}", payload_slice.len());
-                            break;
-                        }
-                    }
-                    0x01 => {
-                        println!("Status Ping packet candidate");
-                        println!();
-
-                        let payload_slice = &packet_data[id_used..];
-
-                        println!("payload: {}bytes", payload_slice.len());
-
-                        if payload_slice.len() == 8 {
-                            println!("valid Status Ping payload length")
-                        } else {
-                            println!("invalid Status Ping payload length: expected 8, got {}", payload_slice.len());
-                            break;
-                        }
-
-                        let payload = match parse_status_ping_payload(&payload_slice) {
-                            Ok(p) => p,
-                            Err(e) => break println!("status ping parse error: {e}"),
-                        };
-                        println!("{payload}")
-                    }
-                    _ => {
-                        println!("Unknown packet in Status state");
-                        println!();
-                    }
-                }
+                handle_status_packet(packet_id, payload_slice, &ctx)?;
             }
             ConnectionState::Login => {
-                println!();
-                println!("Login state packet observed: id = 0x{packet_id:02X} packet_data_len = {}", packet_data.len());
-
-                let payload_slice = &packet_data[id_used..];
-
-                let payload_hex = format_hex(payload_slice);
-
-                println!("payload: {payload_len}bytes");
-
-                println!("payload_hex: {payload_hex}");
-
-                match parse_login_start_payload_with_mcid_uuid(payload_slice) {
-                    Ok(payload) => {
-
-                        println!();
-                        println!("Login start payload");
-                        println!("payload_data: {}", payload.minecraft_id);
-                        println!("payload_data: {}", payload.uuid);
-
-                    }
-                    Err(_) => break
-                };
+                handle_login_packet(packet_id, payload_slice, &ctx)?;
             }
             ConnectionState::Transfer => {
                 println!();
                 println!("Transfer state packet observed: id = 0x{packet_id:02X} packet_data_len = {}", packet_data.len());
-                println!("payload_len: {payload_len}");
             }
             ConnectionState::Unknown => {
                 println!();
                 println!("Unknown state packet observed: id = 0x{packet_id:02X} packet_data_len = {}", packet_data.len());
-                println!("payload_len: {payload_len}");
             }
         }
         println!();

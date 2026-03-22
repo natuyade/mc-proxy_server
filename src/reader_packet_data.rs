@@ -8,7 +8,9 @@ pub async fn read_packet_data(stream: &mut TcpStream) -> std::io::Result<Option<
 
     let packet_length = match read_varint_from_stream(stream).await? {
         Some(len) => len,
-        None => return Ok(None),
+        None => {
+            return Ok(None)
+        },
     };
 
     // 不正なpacket対策
