@@ -1,9 +1,12 @@
 use std::io::{Error, ErrorKind};
 use tokio::net::TcpStream;
+// 非同期読みこみメソッドを使うための拡張機能
 use tokio::io::AsyncReadExt;
-use crate::MAX_PACKET_SIZE;
 use crate::read_varint_from_stream;
 
+use crate::MAX_PACKET_SIZE;
+
+// 最初のpacket_lengthを読む
 pub async fn read_packet_data(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {
 
     let packet_length = match read_varint_from_stream(stream).await? {

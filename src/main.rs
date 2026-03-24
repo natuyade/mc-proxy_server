@@ -1,241 +1,250 @@
-mod reader_varint_from_stream;
-mod reader_packet_data;
-mod reader_varint_from_packet;
-mod parser_handshake_payload;
-mod parser_status_ping_payload;
-mod parser_login_payload;
-mod handler_status_state_packet;
-mod handler_login_packet;
-mod handler_handshaking_packet;
-mod writer_varint_to_stream;
-mod writer_packet_data;
+mod proxy;
 
-use reader_varint_from_stream::read_varint_from_stream;
-use reader_packet_data::read_packet_data;
-use reader_varint_from_packet::read_varint_from_packet;
-use parser_handshake_payload::parse_handshake_payload;
-use parser_status_ping_payload::parse_status_ping_payload;
-use parser_login_payload::parse_login_start_payload_with_mcid_uuid;
-use handler_status_state_packet::handle_status_packet;
-use handler_login_packet::handle_login_packet;
-use handler_handshaking_packet::handle_handshaking_packet;
-use writer_varint_to_stream::write_varint_to_stream;
-use writer_packet_data::write_packet_data;
+use proxy::proxy_main::{ConnectionContext, ConnectionState, HandShakePayload, LoginStatePayload};
+use proxy::proxy_main::MAX_PACKET_SIZE;
 
-//mod format_to_hex;
-//use format_to_hex::format_hex;
+use proxy::proxy_main::run_proxy;
+use proxy::handler_handshaking_packet::handle_handshaking_packet;
+use proxy::handler_login_packet::handle_login_packet;
+use proxy::handler_status_state_packet::handle_status_packet;
+use proxy::parser_handshake_payload::parse_handshake_payload;
+use proxy::parser_login_payload::parse_login_start_payload_with_mcid_uuid;
+use proxy::parser_status_ping_payload::parse_status_ping_payload;
+use proxy::reader_packet_data::read_packet_data;
+use proxy::reader_varint_from_packet::read_varint_from_packet;
+use proxy::reader_varint_from_stream::read_varint_from_stream;
+use proxy::writer_packet_data::write_packet_data;
+use proxy::writer_varint_to_stream::write_varint_to_stream;
+//use proxy::format_to_hex::format_hex;
 
-// 非同期読み書きメソッドを使うための拡張機能
-use tokio::net::{TcpListener, TcpStream};
-use std::io::{Error, ErrorKind};
+// Arc(Atomic Reference Counted)はデータの所有権を複数で持てるようにするもの
+// Rustは通常一つの値の所有者は一人, Arcを使えば一つのデータを複数で共有できる.
+// RwLockはそのデータを安全に複数から読み書きできるようにするもの
+// 誰かが書き込みしているときは, 他からのReadを制限し安全に書き込める.
+// Read自体は複数から同時にできる
+use std::sync::{Arc, RwLock};
+use tokio::runtime::Runtime;
 
-#[derive(Debug, Copy, Clone)]
-enum ConnectionState {
-    HandShaking,
-    Status,
-    Login,
-    Transfer,
-    Unknown,
+// typeは型の名前を決めて書きやすくするためのもの
+// {let shared_rules: SharedRules}で設定された型が使える
+pub type SharedRules = Arc<RwLock<Vec<RouteRule>>>;
+pub type SharedLogs = Arc<RwLock<ProxyLogs>>;
+
+// proxy側とegui側で共有したい値
+#[derive(Debug)]
+pub struct RouteRule {
+    accept_address: String,
+    backend_address: String,
+    enabled: bool,
 }
 
-struct HandShakePayload {
-    protocol_version: i32,
-    server_address: String,
-    server_port: u16,
-    next_state: i32,
-    used_bytes: usize,
+// error 共有
+#[derive(Debug)]
+pub struct ProxyLogs {
+    log: Vec<String>,
 }
 
-struct LoginStatePayload {
-    minecraft_id: String,
-    uuid: uuid::Uuid,
-    used_bytes: usize,
+struct MyApp {
+    rules: SharedRules,
+    logs: Vec<String>,
+    is_running: bool,
+    runtime: Arc<Runtime>,
+    proxy_task: Option<tokio::task::JoinHandle<()>>,
+    proxy_logs: SharedLogs,
 }
 
-struct ConnectionContext {
-    state: ConnectionState,
-    protocol_version: Option<i32>,
-    server_address: Option<String>,
-}
+fn main() -> eframe::Result<()> {
 
-const MAX_PACKET_SIZE: usize = 1024 * 1024;
+    let runtime = Arc::new(Runtime::new().expect("failed to create runtime."));
 
-// 非同期処理を行うためのtokioランタイムを作り, async fn mainを実行できる
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-
-    // Listener::bindで全ての接続の待ち受けアドレスを指定
-    let listener = TcpListener::bind("0.0.0.0:25565").await?;
-
-    println!("================\n System Started\n================\n");
-
-    // サーバーは接続を待ち続ける必要があるためloop
-    loop {
-        println!("Prepared for next connection\n");
-
-        // listenerが待ち受けしているbindされたアドレスへ接続された際にlistener.accept()で
-        // (TcpStream:それぞれの接続元と個別で読み書きするためのハンドル(ストリーム),
-        // SocketAddr:接続元のアドレス)が返される
-        let (socket, addr) = listener.accept().await?;
-        println!("--------------------------------");
-        println!("client connected {addr}");
-        println!("--------------------------------");
-
-        // tokio::spawnは中の処理を別のタスクで継続させ, 次の処理をすぐに実行できる
-        // 今回ならaccept()を受けたらその接続先との処理をspawnで継続させつつ
-        // すぐに次の接続を待ち受けれる
-        tokio::spawn(
-            async move {
-                // socketはhandleに独占させて扱うので参照させるのではなく所有させる
-                match handle_client(socket).await {
-                    Ok(_) => {}
-                    Err(e) => println!("{e}")
-                };
-                println!();
-                println!("client disconnected");
-            }
-        );
-    }
-}
-
-async fn handle_client(mut client_stream: TcpStream) -> std::io::Result<()> {
-
-    let mut ctx = ConnectionContext {
-        state: ConnectionState::HandShaking,
-        protocol_version: None,
-        server_address: None,
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size(egui::Vec2::new(860., 480.)),
+        ..Default::default()
     };
-    let mut backend: Option<TcpStream> = None;
-    let mut relay = false;
 
-    loop {
-        // loopされたときの保険
-        if relay == true {
-            break;
+    eframe::run_native(
+        "Mc proxy server",
+        options,
+        Box::new(|cc| Ok(Box::new(MyApp::new(cc, runtime)))),
+    )
+}
+
+// startup
+impl MyApp {
+    fn new(_cc: &eframe::CreationContext, runtime: Arc<Runtime>) -> Self {
+        Self {
+            rules: Arc::new(RwLock::new(vec![RouteRule {
+                accept_address: "127.0.0.1:25566".to_string(),
+                backend_address: "127.0.0.1:25565".to_string(),
+                enabled: true,
+            }])),
+            logs: vec!["App started!".to_string()],
+            is_running: false,
+            runtime,
+            proxy_task: None,
+            proxy_logs: Arc::new(RwLock::new(ProxyLogs {
+                log: Vec::new(),
+            })),
         }
+    }
+}
 
-        let packet_data = match read_packet_data(&mut client_stream).await {
-            Ok(Some(data)) => data,
-            Ok(None) => {
-                println!("connection closed normally before next packet");
-                return Ok(())
-            }
-            Err(e) => {
-                return Err(e);
+impl eframe::App for MyApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+
+        let mut visuals = egui::Visuals::light();
+        visuals.panel_fill = egui::Color32::LIGHT_GRAY;
+        visuals.override_text_color = Some(egui::Color32::DARK_GRAY);
+        visuals.text_edit_bg_color = Some(egui::Color32::BLACK);
+
+        ctx.set_visuals(visuals);
+
+        let mut rules = match self.rules.write() {
+            Ok(guard) => guard,
+            Err(_) => {
+                self.logs.push("failed to lock rules".to_string());
+                return;
             }
         };
 
-        let (packet_id, id_used) = read_varint_from_packet(&packet_data)?;
+        egui::SidePanel::right("logs_panel")
+            .resizable(false)
+            .exact_width(400.)
+            .show(ctx, |ui| {
+                ui.heading("logs");
 
-        let payload_slice = &packet_data[id_used..];
-        println!("payload: {}bytes", payload_slice.len());
+                ui.separator();
 
-        match ctx.state {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for line in &self.logs {
+                        ui.label(line);
+                    }
+                });
+            });
 
-            ConnectionState::HandShaking => {
-                ctx = handle_handshaking_packet(packet_id, payload_slice)?;
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical(|ui| {
+                ui.heading("Minecraft Proxy GUI");
 
-                if backend.is_none() {
+                ui.horizontal(|ui| {
 
-                    // match左辺のSomeの中でstringの記述ができないため
-                    // as_deref()でStringを&strに変換.
-                    // as_deref()方法(そもそも左辺を元から&strで書く)でもいいが,
-                    // 先に変換作業をしている場合はこれで解決する
-                    let backend_address = match ctx.server_address.as_deref() {
-                        Some("127.0.0.1") => "127.0.0.1:25566",
-                        Some("localhost") => "127.0.0.1:25566",
-                        Some("test.example.com") => "127.0.0.1:25566",
-                        Some("test2.example.com") => "127.0.0.1:25567",
-                        Some(_) => return Err(Error::new(ErrorKind::InvalidData, "this server_address is not allowed")),
-                        None => {
-                            return Err(Error::new(ErrorKind::NotFound, "server_address is missing in ConnectionContext"))
+                    // proxyの起動ボタン
+                    if ui.button("Start").clicked() {
+                        if !self.is_running {
+                            self.logs.push("Starting proxy server...".to_string());
+                            self.is_running = true;
+
+                            // 共有する構造体をArc::clone()
+                            let share_rules = Arc::clone(&self.rules);
+                            let share_proxy_logs = Arc::clone(&self.proxy_logs);
+                            let share_ctx = ctx.clone();
+
+                            // proxy本体を起動
+                            let handle = self.runtime.spawn(async move {
+                                run_proxy(share_rules, share_proxy_logs, share_ctx).await.expect("proxy panic!");
+                            });
+
+                            self.proxy_task = Some(handle);
+
+                        } else {
+                            self.logs.push("server is already running.".to_string());
                         }
-                    };
-                    // upstreamへこちらからconnectする(これはまだrelayしているわけではない)
-                    // Client -> Proxy(this code) -> Server へ繋げる準備
-                    let server_stream = TcpStream::connect(backend_address.to_string()).await?;
-                    backend = Some(server_stream);
-                    println!("proxy connected to real server");
+                    }
+
+                    // proxyの停止ボタン
+                    if ui.button("Stop").clicked() {
+                        if self.is_running {
+
+                            // .take()でOptionの中身をもらった後相手のOptionを空にする(貰う)
+                            if let Some(handle) = self.proxy_task.take() {
+                                // JoinHandleで紐づいたtaskを.abort()で強制終了する
+                                handle.abort();
+                            }
+
+                            self.logs.push("Stopping proxy Server...".to_string());
+                            self.is_running = false;
+                        } else {
+                            self.logs.push("proxy server is not working.".to_string());
+                        }
+                    }
+
+                    // taskの有無を見てステータス表示
+                    if self.proxy_task.is_none() {
+                        ui.label("ProxyServer: Stopped");
+                    } else {
+                        ui.label("ProxyServer: Started");
+                    }
+
+                    // proxy側のログをもらう
+                    if let Ok(mut proxy_logs) = self.proxy_logs.write() {
+                        // appendでtakeのvector版のようなことができる
+                        self.logs.append(&mut proxy_logs.log);
+                    } else {
+                        self.logs.push("failed to lock proxy logs".to_string())
+                    }
+                });
+
+                // uiを分ける線を描画
+                ui.separator();
+
+                // buttonが押されたときにrulesVecに構造体をpushする.
+                // 下のforへ
+                if ui.button("add rule").clicked() {
+                    rules.push(RouteRule {
+                        accept_address: String::new(),
+                        backend_address: "127.0.0.1:25565".to_string(),
+                        enabled: true,
+                    });
+                    self.logs.push("added extra rule".to_string());
                 }
-                let server = match backend.as_mut() {
-                    Some(s) => s,
-                    None => return Err(Error::new(ErrorKind::NotConnected, "backend connect failed"))
-                };
-                // packetのraw dataを送信
-                write_packet_data(server, &packet_data).await?;
-                println!();
-                println!("forwarded handshake packet to upstream");
-            }
-            // サーバー一覧での表示用
-            ConnectionState::Status => {
-                handle_status_packet(packet_id, payload_slice, &ctx)?;
 
-                let server = match backend.as_mut() {
-                    Some(s) => s,
-                    None => return Err(Error::new(ErrorKind::NotConnected, "backend connect failed"))
-                };
-                // packetのraw dataを送信
-                write_packet_data(server, &packet_data).await?;
-                println!();
-                println!("forwarded status packet to upstream");
+                ui.separator();
 
-                // 0x01の場合は現状relay側で実装されるので
-                // 分岐処理は書く必要性は極めて低いので無し
-                if packet_id == 0x00 {
-                    relay = true;
-                    // relayまでの条件がそろったのでbreak
-                    break;
+                let mut remove_index = None;
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+
+                    // rulesに構造体があればここで一覧表示される.
+                    // .enumerate()でiterator(vec等の中身)に順番にidを振り分ける(今回なら -> (id: usize, rule: &mut RouteRule))
+                    for (id, rule) in rules.iter_mut().enumerate() {
+                        // 横並びに配置
+                        ui.horizontal(|ui| {
+                            ui.label("allow");
+                            ui.checkbox(&mut rule.enabled, "");
+                            ui.label("from:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut rule.accept_address)
+                                    .text_color(egui::Color32::WHITE)
+                                    .desired_width(128.),
+                            );
+
+                            ui.label("to:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut rule.backend_address)
+                                    .text_color(egui::Color32::WHITE)
+                                    .desired_width(128.),
+                            );
+
+                            // clickされた時にこの要素全体に振られたidをremove_indexに入れ
+                            // 下のif letへ
+                            if ui.button("-").clicked() {
+                                remove_index = Some(id);
+                                self.logs.push(format!(
+                                    "removed rule [ from: \"{}\", to: \"{}\" ]",
+                                    rule.accept_address,
+                                    rule.backend_address,
+                                ));
+                            }
+                        });
+                    }
+                });
+
+                // 上で指定されたidをvectorのindexにし対応した場所を削除
+                // そのまま上の表示も対応して変わる
+                if let Some(n) = remove_index {
+                    rules.remove(n);
                 }
-            }
-            // ログイン処理用
-            ConnectionState::Login => {
-                handle_login_packet(packet_id, payload_slice, &ctx)?;
-
-                let server = match backend.as_mut() {
-                    Some(s) => s,
-                    None => return Err(Error::new(ErrorKind::NotConnected, "backend connect failed"))
-                };
-                write_packet_data(server, &packet_data).await?;
-                println!();
-                println!("forwarded login packet to upstream");
-
-                if packet_id == 0x00 {
-                    relay = true;
-                    break;
-                }
-            }
-            ConnectionState::Transfer => {
-                println!();
-                println!("Transfer state packet observed: id = 0x{packet_id:02X} packet_data_len = {}", packet_data.len());
-            }
-            ConnectionState::Unknown => {
-                println!();
-                println!("Unknown state packet observed: id = 0x{packet_id:02X} packet_data_len = {}", packet_data.len());
-            }
-        }
-        println!();
+            });
+        });
     }
-
-    // relay処理
-    if relay == true {
-        let server_stream = match backend.as_mut() {
-            Some(s) => s,
-            None => return Err(Error::new(ErrorKind::NotConnected, "backend connect failed"))
-        };
-
-        // copy_bidirectionalは
-        // 両方向(各stream)からのこちらで消費していないデータをそれぞれ送りあう.
-        // ここの時点ではClientから送られてきたpacketデータを読んで消費してしまっているので,
-        // write_packet_dataで消費した分を送信しなおしている.
-        // 以降のデータを全て相合中継する
-        // 片方のデータがEofした場合に反対方向にshutdown()を送る
-
-        // from_clientとfrom_serverはそれぞれから流れたbyte数が出力されます
-        let (from_client, from_server) = tokio::io::copy_bidirectional(&mut client_stream, server_stream).await?;
-
-        println!();
-        println!("relay finished:\nclient->server: {} bytes\nserver->client: {} bytes", from_client, from_server);
-    }
-
-    Ok(())
 }

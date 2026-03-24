@@ -4,12 +4,14 @@ use crate::parse_handshake_payload;
 
 pub fn handle_handshaking_packet(packet_id: i32, payload_slice: &[u8]) -> std::io::Result<ConnectionContext> {
 
-    println!("Handshake packet observed: id = 0x{packet_id:02X}");
     println!();
+    println!("Handshake packet observed: id = 0x{packet_id:02X}");
 
     match packet_id {
         0x00 => {
-            println!("Handshake!^_^@@^.^");
+            println!();
+            println!();
+            println!("Handshake!^_^)🤝(^.^");
             println!();
 
             let payload = parse_handshake_payload(payload_slice)?;
@@ -47,6 +49,7 @@ pub fn handle_handshaking_packet(packet_id: i32, payload_slice: &[u8]) -> std::i
             let connection_context = ConnectionContext {
                 state,
                 protocol_version: Some(payload.protocol_version),
+                server_address: Some(payload.server_address),
             };
 
             Ok(connection_context)

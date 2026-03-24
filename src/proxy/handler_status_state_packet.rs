@@ -15,10 +15,12 @@ pub fn handle_status_packet(packet_id: i32, payload_slice: &[u8], ctx: &Connecti
     println!("protocol_version from context: {protocol_version}");
     
     match packet_id {
+        // サーバーの稼働状況を返す
         0x00 => {
             println!("Status Request packet candidate");
             println!();
 
+            // 0x00はサーバー一覧での表示用の情報だけがrequestされるのでpayloadがないのが正常
             if payload_slice.is_empty() {
                 println!("valid Status Request payload length")
             } else {
@@ -26,10 +28,12 @@ pub fn handle_status_packet(packet_id: i32, payload_slice: &[u8], ctx: &Connecti
             }
             Ok(())
         }
+        // サーバーの遅延状況(ping)を返す
         0x01 => {
             println!("Status Ping packet candidate");
             println!();
 
+            // 0x01はclient側からlatancy測定のために送信するpacket(payload: 8bytesLong)
             if payload_slice.len() == 8 {
                 println!("valid Status Ping payload length")
             } else {
