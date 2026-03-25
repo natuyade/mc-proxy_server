@@ -1,0 +1,13 @@
+[package]
+name = "mc-proxy_server"
+version = "0.1.1"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.50.0", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync"] }
+uuid = { version = "1.22.0", features = ["v4"] }
+
+egui = { version = "0.33.3", features = [] }
+eframe = { version = "0.33.3", features = [] }
+
+chrono = { version = "0.4.44", features = [] }

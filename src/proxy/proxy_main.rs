@@ -155,14 +155,15 @@ pub async fn handle_client(mut client_stream: TcpStream, shared_rules: SharedRul
                     }
                 }
 
-                // server側のstreamがなければ,サーバーがそもそもないか
-                // 許可されていないipでjoinしようとしているかのどちらか
-                let server = match backend.as_mut() {
-                    Some(s) => s,
-                    None => return Err(Error::new(ErrorKind::InvalidData, "connected with not allowed ip"))
-                };
-                // packetのraw dataを送信
-                write_packet_data(server, &packet_data).await?;
+                // server側のstreamがなければ,backendサーバーがそもそもないか
+                // 許可されていないipでjoinしようとしているか
+                // Server一覧からのstatus reqかのどれか
+
+                // なのでif letで分岐しているのは正常
+                if let Some(server) = backend.as_mut() {
+                    // packetのraw dataを送信
+                    write_packet_data(server, &packet_data).await?;
+                }
             }
             // サーバー一覧での表示用
             ConnectionState::Status => {

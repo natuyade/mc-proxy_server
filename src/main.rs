@@ -140,10 +140,10 @@ impl eframe::App for MyApp {
                 let full_x = full_panel_size[0];
                 let full_y = full_panel_size[1];
 
-                let gap = 16.;
+                let gap = 32.;
 
                 let left_width = 380.;
-                let right_width = full_x - left_width - gap;
+                let right_width = (full_x - gap) - left_width;
 
                 // 上揃いの横並び
                 ui.horizontal_top(|ui| {
@@ -229,41 +229,43 @@ impl eframe::App for MyApp {
 
                             let mut remove_index = None;
 
-                            egui::ScrollArea::vertical().show(ui, |ui| {
+                            ui.push_id("lists panel", |ui| {
+                                egui::ScrollArea::vertical().show(ui, |ui| {
 
-                                // rulesに構造体があればここで一覧表示される.
-                                // .enumerate()でiterator(vec等の中身)に順番にidを振り分ける(今回なら -> (id: usize, rule: &mut RouteRule))
-                                for (id, rule) in rules.iter_mut().enumerate() {
-                                    // 横並びに配置
-                                    ui.horizontal(|ui| {
-                                        ui.label("allow");
-                                        ui.checkbox(&mut rule.enabled, "");
-                                        ui.label("from:");
-                                        ui.add(
-                                            egui::TextEdit::singleline(&mut rule.accept_address)
-                                                .text_color(egui::Color32::WHITE)
-                                                .desired_width(96.),
-                                        );
+                                    // rulesに構造体があればここで一覧表示される.
+                                    // .enumerate()でiterator(vec等の中身)に順番にidを振り分ける(今回なら -> (id: usize, rule: &mut RouteRule))
+                                    for (id, rule) in rules.iter_mut().enumerate() {
+                                        // 横並びに配置
+                                        ui.horizontal(|ui| {
+                                            ui.label("allow");
+                                            ui.checkbox(&mut rule.enabled, "");
+                                            ui.label("from:");
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut rule.accept_address)
+                                                    .text_color(egui::Color32::WHITE)
+                                                    .desired_width(90.),
+                                            );
 
-                                        ui.label("to:");
-                                        ui.add(
-                                            egui::TextEdit::singleline(&mut rule.backend_address)
-                                                .text_color(egui::Color32::WHITE)
-                                                .desired_width(128.),
-                                        );
+                                            ui.label("to:");
+                                            ui.add(
+                                                egui::TextEdit::singleline(&mut rule.backend_address)
+                                                    .text_color(egui::Color32::WHITE)
+                                                    .desired_width(128.),
+                                            );
 
-                                        // clickされた時にこの要素全体に振られたidをremove_indexに入れ
-                                        // 下のif letへ
-                                        if ui.button("-").clicked() {
-                                            remove_index = Some(id);
-                                            self.logs.push(format!(
-                                                "removed rule [ from: \"{}\", to: \"{}\" ]",
-                                                rule.accept_address,
-                                                rule.backend_address,
-                                            ));
-                                        }
-                                    });
-                                }
+                                            // clickされた時にこの要素全体に振られたidをremove_indexに入れ
+                                            // 下のif letへ
+                                            if ui.button("-").clicked() {
+                                                remove_index = Some(id);
+                                                self.logs.push(format!(
+                                                    "removed rule [ from: \"{}\", to: \"{}\" ]",
+                                                    rule.accept_address,
+                                                    rule.backend_address,
+                                                ));
+                                            }
+                                        });
+                                    }
+                                });
                             });
 
                             // 上で指定されたidをvectorのindexにし対応した場所を削除
@@ -283,9 +285,17 @@ impl eframe::App for MyApp {
 
                             ui.heading("logs");
 
-                            for line in self.logs.iter() {
-                                ui.label(line);
-                            }
+                            // スクロールエリアが二つある場合など, idを振り分けないと
+                            // スクロールバードラッグ中などにidによって操作の制御があるためwarningが出る.
+                            // id_salt()メソッドがあったので多分それでも行ける
+                            ui.push_id("logs panel", |ui| {
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+
+                                    for line in self.logs.iter() {
+                                        ui.label(line);
+                                    }
+                                })
+                            });
                         }
                     )
                 });
