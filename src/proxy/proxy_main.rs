@@ -6,7 +6,7 @@ use crate::{read_packet_data, read_varint_from_packet, handle_handshaking_packet
 use crate::{SharedRules, SharedLogs};
 use crate::proxy::push_log_line::push_log;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ConnectionState {
     HandShaking,
     Status,
@@ -18,7 +18,7 @@ pub enum ConnectionState {
 pub struct HandShakePayload {
     pub protocol_version: i32,
     pub server_address: String,
-    pub server_port: u16,
+    pub _server_port: u16,
     pub next_state: i32,
     pub used_bytes: usize,
 }
@@ -38,7 +38,6 @@ pub struct ConnectionContext {
 pub struct PlayerData {
     pub player_id: String,
     pub player_uuid: uuid::Uuid,
-    pub protocol_version: i32,
     pub payload_warning: bool,
     pub payload_used_bytes: usize,
 }
@@ -66,13 +65,10 @@ pub async fn run_proxy(shared_rules: SharedRules, shared_logs: SharedLogs, ctx: 
         // listenerが待ち受けしているbindされたアドレスへ接続された際にlistener.accept()で
         // (TcpStream:それぞれの接続元と個別で読み書きするためのハンドル(ストリーム),
         // SocketAddr:接続元のアドレス)が返される
-        let (socket, addr) = listener.accept().await?;
+        let (socket, _addr) = listener.accept().await?;
 
         let rules = Arc::clone(&shared_rules);
         let logs = Arc::clone(&shared_logs);
-
-        // こちらで共有した値がeguiに即時更新反映されるようにしたい場合request_repaintが使える
-        push_log(&logs, &ctx, format!("Client connected: {addr}"));
 
         let move_ctx = ctx.clone();
 
@@ -90,13 +86,12 @@ pub async fn run_proxy(shared_rules: SharedRules, shared_logs: SharedLogs, ctx: 
                     Ok(_) => {}
                     Err(e) => push_log(&end_log, &ctx, format!("{e}"))
                 };
-                push_log(&end_log, &ctx, format!("Client disconnected: {addr}"));
             }
         );
     }
 }
 
-pub async fn handle_client(mut client_stream: TcpStream, _shared_rules: SharedRules, shared_log: SharedLogs, egui_ctx: egui::Context) -> std::io::Result<()> {
+pub async fn handle_client(mut client_stream: TcpStream, shared_rules: SharedRules, shared_log: SharedLogs, egui_ctx: egui::Context) -> std::io::Result<()> {
 
     let mut connection_ctx = ConnectionContext {
         state: ConnectionState::HandShaking,
@@ -106,6 +101,10 @@ pub async fn handle_client(mut client_stream: TcpStream, _shared_rules: SharedRu
     let mut player_ctx = PlayerContext {
         player_data: None
     };
+
+    let mut backend_addr: Option<String> = None;
+
+    // tokio task 管理監視用
     let mut backend: Option<TcpStream> = None;
     let mut relay = false;
 
@@ -136,33 +135,34 @@ pub async fn handle_client(mut client_stream: TcpStream, _shared_rules: SharedRu
                 connection_ctx = handle_handshaking_packet(packet_id, payload_slice)?;
 
                 if backend.is_none() {
-
-                    // match左辺のSomeの中でstringの記述ができないため
-                    // as_deref()でStringを&strに変換.
-                    // as_deref()方法(そもそも左辺を元から&strで書く)でもいいが,
-                    // 先に変換作業をしている場合はこれで解決できる
-                    let backend_address = match connection_ctx.server_address.as_deref() {
-                        Some("127.0.0.1") => "127.0.0.1:25565",
-                        Some("localhost") => "127.0.0.1:25565",
-                        Some("test.example.com") => "127.0.0.1:25565",
-                        Some("test2.example.com") => "127.0.0.1:25567",
-                        Some(_) => return Err(Error::new(ErrorKind::InvalidData, "this server_address is not allowed")),
-                        None => {
-                            return Err(Error::new(ErrorKind::NotFound, "server_address is missing in ConnectionContext"))
+                    if let Ok(rules) = &shared_rules.read() {
+                        for rule in rules.iter() {
+                            if rule.enabled == true {
+                                if let Some(addr) = connection_ctx.server_address.clone() {
+                                    if addr == rule.accept_address {
+                                        backend_addr = Some(rule.backend_address.clone());
+                                    }
+                                }
+                            }
                         }
-                    };
+                    }
+
                     // upstreamへこちらからconnectする(これはまだrelayしているわけではない)
                     // Client -> Proxy(this code) -> Server へ繋げる準備
-                    let server_stream = TcpStream::connect(backend_address).await?;
-                    backend = Some(server_stream);
+                    if let Some(addr) = &backend_addr {
+                        let server_stream = TcpStream::connect(addr).await?;
+                        backend = Some(server_stream);
+                    }
                 }
+
+                // server側のstreamがなければ,サーバーがそもそもないか
+                // 許可されていないipでjoinしようとしているかのどちらか
                 let server = match backend.as_mut() {
                     Some(s) => s,
-                    None => return Err(Error::new(ErrorKind::NotConnected, "backend connect failed"))
+                    None => return Err(Error::new(ErrorKind::InvalidData, "connected with not allowed ip"))
                 };
                 // packetのraw dataを送信
                 write_packet_data(server, &packet_data).await?;
-                push_log(&shared_log, &egui_ctx, "Client connected by the proxy to the server");
             }
             // サーバー一覧での表示用
             ConnectionState::Status => {
@@ -170,7 +170,7 @@ pub async fn handle_client(mut client_stream: TcpStream, _shared_rules: SharedRu
 
                 let server = match backend.as_mut() {
                     Some(s) => s,
-                    None => return Err(Error::new(ErrorKind::NotConnected, "backend connect failed"))
+                    None => return Err(Error::new(ErrorKind::NotConnected, "failed to connect to backend"))
                 };
                 // packetのraw dataを送信
                 write_packet_data(server, &packet_data).await?;
@@ -186,8 +186,18 @@ pub async fn handle_client(mut client_stream: TcpStream, _shared_rules: SharedRu
             // ログイン処理用
             ConnectionState::Login => {
 
+                let login_ip = match &connection_ctx.server_address {
+                    Some(addr) => addr,
+                    None => return Err(Error::new(ErrorKind::NotFound, "[what?]Not found login ip"))
+                };
                 let player_data = handle_login_packet(packet_id, payload_slice, &connection_ctx)?;
-                push_log(&shared_log, &egui_ctx, format!("[PlayerData]prot:{}, {}({})", player_data.protocol_version, player_data.player_id, player_data.player_uuid));
+                let address = match &backend_addr {
+                    Some(addr) => addr,
+                    None => return Err(Error::new(ErrorKind::NotFound, "not found backend address"))
+                };
+
+                push_log(&shared_log, &egui_ctx, format!("{}: {}({}) connected to {}", player_data.player_id, player_data.player_uuid, login_ip, address));
+
                 if player_data.payload_warning == true {
                     push_log(&shared_log, &egui_ctx, format!(
                         "warning: payload has trailing bytes[total: {}, used: {}]",
@@ -202,7 +212,6 @@ pub async fn handle_client(mut client_stream: TcpStream, _shared_rules: SharedRu
                     None => return Err(Error::new(ErrorKind::NotConnected, "backend connect failed"))
                 };
                 write_packet_data(server, &packet_data).await?;
-                push_log(&shared_log, &egui_ctx, "forwarded login packet to upstream");
 
                 if packet_id == 0x00 {
                     relay = true;
@@ -235,12 +244,20 @@ pub async fn handle_client(mut client_stream: TcpStream, _shared_rules: SharedRu
         // from_clientとfrom_serverはそれぞれから流れたbyte数が出力されます
         let (from_client, from_server) = tokio::io::copy_bidirectional(&mut client_stream, server_stream).await?;
 
-        let player_data = match player_ctx.player_data {
-            Some(d) => d,
-            None => return Err(Error::new(ErrorKind::NotFound, "[what?]Not found player data"))
-        };
+        if connection_ctx.state == ConnectionState::Login {
 
-        push_log(&shared_log, &egui_ctx, format!("Relay Finished![{}: {}]Result(client->server: {}bytes, server->client: {}bytes)", player_data.player_id, player_data.player_uuid, from_client, from_server));
+            let player_data = match player_ctx.player_data {
+                Some(d) => d,
+                None => return Err(Error::new(ErrorKind::NotFound, "[what?]Not found player data"))
+            };
+            push_log(&shared_log, &egui_ctx, format!(
+                "Relay Finished[{}: {}]{}b|server<->client|{}b)",
+                player_data.player_id,
+                player_data.player_uuid,
+                from_client,
+                from_server
+            ))
+        }
     }
 
     Ok(())

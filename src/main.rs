@@ -23,7 +23,6 @@ use proxy::writer_varint_to_stream::write_varint_to_stream;
 // 誰かが書き込みしているときは, 他からのReadを制限し安全に書き込める.
 // Read自体は複数から同時にできる
 use std::sync::{Arc, RwLock};
-use tokio::runtime::Runtime;
 
 // typeは型の名前を決めて書きやすくするためのもの
 // {let shared_rules: SharedRules}で設定された型が使える
@@ -48,17 +47,24 @@ struct MyApp {
     rules: SharedRules,
     logs: Vec<String>,
     is_running: bool,
-    runtime: Arc<Runtime>,
+    runtime: Arc<tokio::runtime::Runtime>,
     proxy_task: Option<tokio::task::JoinHandle<()>>,
     proxy_logs: SharedLogs,
 }
 
 fn main() -> eframe::Result<()> {
 
-    let runtime = Arc::new(Runtime::new().expect("failed to create runtime."));
+    let runtime = Arc::new(tokio::runtime::Runtime::new().expect("failed to create runtime."));
+
+    let icon = eframe::icon_data::from_png_bytes(
+        include_bytes!("assets/images/icon.png"))
+        .expect("failed to load a icon");
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size(egui::Vec2::new(860., 480.)),
+        viewport: egui::ViewportBuilder::default()
+            .with_icon(icon)
+            .with_inner_size(egui::Vec2::new(800., 460.))
+            .with_min_inner_size(egui::Vec2::new(460., 0.)),
         ..Default::default()
     };
 
@@ -71,14 +77,31 @@ fn main() -> eframe::Result<()> {
 
 // startup
 impl MyApp {
-    fn new(_cc: &eframe::CreationContext, runtime: Arc<Runtime>) -> Self {
+    fn new(cc: &eframe::CreationContext, runtime: Arc<tokio::runtime::Runtime>) -> Self {
+
+        let mut visuals = egui::Visuals::light();
+        visuals.panel_fill = egui::Color32::LIGHT_GRAY;
+        visuals.override_text_color = Some(egui::Color32::DARK_GRAY);
+        visuals.text_edit_bg_color = Some(egui::Color32::BLACK);
+
+        cc.egui_ctx.set_visuals(visuals);
+
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "unifont".to_owned(),
+            Arc::new(egui::FontData::from_static(include_bytes!("assets/fonts/unifont-17.0.03.otf"))
+            ));
+        fonts.families.get_mut(&eframe::epaint::FontFamily::Proportional).unwrap().insert(0, "unifont".to_owned());
+
+        cc.egui_ctx.set_fonts(fonts);
+
         Self {
             rules: Arc::new(RwLock::new(vec![RouteRule {
-                accept_address: "127.0.0.1:25566".to_string(),
+                accept_address: "mc.hypixel.net".to_string(),
                 backend_address: "127.0.0.1:25565".to_string(),
                 enabled: true,
             }])),
-            logs: vec!["App started!".to_string()],
+            logs: vec!["App started!".to_string(), "Saving logs is not yet available.".to_string()],
             is_running: false,
             runtime,
             proxy_task: None,
@@ -92,13 +115,7 @@ impl MyApp {
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
 
-        let mut visuals = egui::Visuals::light();
-        visuals.panel_fill = egui::Color32::LIGHT_GRAY;
-        visuals.override_text_color = Some(egui::Color32::DARK_GRAY);
-        visuals.text_edit_bg_color = Some(egui::Color32::BLACK);
-
-        ctx.set_visuals(visuals);
-
+        // RwLockを何度も外すのが面倒くさいので変数で解除
         let mut rules = match self.rules.write() {
             Ok(guard) => guard,
             Err(_) => {
@@ -107,144 +124,171 @@ impl eframe::App for MyApp {
             }
         };
 
-        egui::SidePanel::right("logs_panel")
-            .resizable(false)
-            .exact_width(400.)
+        // proxy側のログをもらう
+        if let Ok(mut proxy_logs) = self.proxy_logs.write() {
+            // appendでtakeのvector版のようなことができる
+            self.logs.append(&mut proxy_logs.log);
+        } else {
+            self.logs.push("failed to lock proxy logs".to_string())
+        }
+
+        // CentralPanelは置かれたほかのパネルの残りの場所を埋めるパネル的なもの
+        egui::CentralPanel::default()
             .show(ctx, |ui| {
-                ui.heading("logs");
 
-                ui.separator();
+                let full_panel_size = ui.available_size();
+                let full_x = full_panel_size[0];
+                let full_y = full_panel_size[1];
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for line in &self.logs {
-                        ui.label(line);
-                    }
-                });
-            });
+                let gap = 16.;
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.vertical(|ui| {
-                ui.heading("Minecraft Proxy GUI");
+                let left_width = 380.;
+                let right_width = full_x - left_width - gap;
 
-                ui.horizontal(|ui| {
+                // 上揃いの横並び
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_width, full_y),
+                        // ui中の要素の軸と交差側の寄せる側を指定
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.heading("Minecraft Proxy GUI");
 
-                    // proxyの起動ボタン
-                    if ui.button("Start").clicked() {
-                        if !self.is_running {
-                            self.logs.push("Starting proxy server...".to_string());
-                            self.is_running = true;
+                            ui.horizontal(|ui| {
 
-                            // 共有する構造体をArc::clone()
-                            let share_rules = Arc::clone(&self.rules);
-                            let share_proxy_logs = Arc::clone(&self.proxy_logs);
-                            let share_ctx = ctx.clone();
+                                // proxyの起動ボタン
+                                if ui.button("Start").clicked() {
+                                    if !self.is_running {
+                                        self.logs.push("Starting proxy server...".to_string());
+                                        self.is_running = true;
 
-                            // proxy本体を起動
-                            let handle = self.runtime.spawn(async move {
-                                run_proxy(share_rules, share_proxy_logs, share_ctx).await.expect("proxy panic!");
+                                        // 共有する構造体をArc::clone()
+                                        let share_rules = Arc::clone(&self.rules);
+                                        let share_proxy_logs = Arc::clone(&self.proxy_logs);
+                                        let share_ctx = ctx.clone();
+
+                                        // proxy本体を起動
+                                        let handle = self.runtime.spawn(async move {
+                                            run_proxy(share_rules, share_proxy_logs, share_ctx).await.expect("proxy panic!");
+                                        });
+
+                                        self.proxy_task = Some(handle);
+
+                                    } else {
+                                        self.logs.push("server is already running.".to_string());
+                                    }
+                                }
+
+                                // proxyの停止ボタン
+                                if ui.button("Stop").clicked() {
+                                    if self.is_running {
+
+                                        // .take()でOptionの中身をもらった後相手のOptionを空にする(貰う)
+                                        if let Some(handle) = self.proxy_task.take() {
+                                            // JoinHandleで紐づいたtaskを.abort()で強制終了する
+                                            handle.abort();
+                                        }
+
+                                        self.logs.push("Stopping proxy Server...".to_string());
+                                        self.is_running = false;
+                                    } else {
+                                        self.logs.push("proxy server is not working.".to_string());
+                                    }
+                                }
+
+                                ui.horizontal(|ui| {
+                                    // taskの有無を見てステータス表示
+
+                                    ui.label("ProxyServer:");
+                                    if self.proxy_task.is_none() {
+                                        ui.colored_label(egui::Color32::RED, "Stopped")
+                                    } else {
+                                        ui.colored_label(egui::Color32::GREEN, "Started")
+                                    }
+                                });
                             });
 
-                            self.proxy_task = Some(handle);
+                            // uiを分ける線を描画
+                            ui.separator();
 
-                        } else {
-                            self.logs.push("server is already running.".to_string());
-                        }
-                    }
+                            // buttonが押されたときにrulesVecに構造体をpushする.
+                            // 下のforへ
+                            ui.horizontal(|ui| {
+                                if ui.button("add rule").clicked() {
+                                    rules.push(RouteRule {
+                                        accept_address: String::new(),
+                                        backend_address: "127.0.0.1:25565".to_string(),
+                                        enabled: true,
+                                    });
+                                    self.logs.push("added extra rule".to_string());
+                                }
+                                ui.label("from[domain_ip] to[server_ip:port]")
+                            });
 
-                    // proxyの停止ボタン
-                    if ui.button("Stop").clicked() {
-                        if self.is_running {
+                            ui.separator();
 
-                            // .take()でOptionの中身をもらった後相手のOptionを空にする(貰う)
-                            if let Some(handle) = self.proxy_task.take() {
-                                // JoinHandleで紐づいたtaskを.abort()で強制終了する
-                                handle.abort();
+                            let mut remove_index = None;
+
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+
+                                // rulesに構造体があればここで一覧表示される.
+                                // .enumerate()でiterator(vec等の中身)に順番にidを振り分ける(今回なら -> (id: usize, rule: &mut RouteRule))
+                                for (id, rule) in rules.iter_mut().enumerate() {
+                                    // 横並びに配置
+                                    ui.horizontal(|ui| {
+                                        ui.label("allow");
+                                        ui.checkbox(&mut rule.enabled, "");
+                                        ui.label("from:");
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut rule.accept_address)
+                                                .text_color(egui::Color32::WHITE)
+                                                .desired_width(96.),
+                                        );
+
+                                        ui.label("to:");
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut rule.backend_address)
+                                                .text_color(egui::Color32::WHITE)
+                                                .desired_width(128.),
+                                        );
+
+                                        // clickされた時にこの要素全体に振られたidをremove_indexに入れ
+                                        // 下のif letへ
+                                        if ui.button("-").clicked() {
+                                            remove_index = Some(id);
+                                            self.logs.push(format!(
+                                                "removed rule [ from: \"{}\", to: \"{}\" ]",
+                                                rule.accept_address,
+                                                rule.backend_address,
+                                            ));
+                                        }
+                                    });
+                                }
+                            });
+
+                            // 上で指定されたidをvectorのindexにし対応した場所を削除
+                            // そのまま上の表示も対応して変わる
+                            if let Some(n) = remove_index {
+                                rules.remove(n);
                             }
-
-                            self.logs.push("Stopping proxy Server...".to_string());
-                            self.is_running = false;
-                        } else {
-                            self.logs.push("proxy server is not working.".to_string());
                         }
-                    }
+                    );
 
-                    // taskの有無を見てステータス表示
-                    if self.proxy_task.is_none() {
-                        ui.label("ProxyServer: Stopped");
-                    } else {
-                        ui.label("ProxyServer: Started");
-                    }
+                    ui.separator();
 
-                    // proxy側のログをもらう
-                    if let Ok(mut proxy_logs) = self.proxy_logs.write() {
-                        // appendでtakeのvector版のようなことができる
-                        self.logs.append(&mut proxy_logs.log);
-                    } else {
-                        self.logs.push("failed to lock proxy logs".to_string())
-                    }
-                });
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(right_width, full_y),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
 
-                // uiを分ける線を描画
-                ui.separator();
+                            ui.heading("logs");
 
-                // buttonが押されたときにrulesVecに構造体をpushする.
-                // 下のforへ
-                if ui.button("add rule").clicked() {
-                    rules.push(RouteRule {
-                        accept_address: String::new(),
-                        backend_address: "127.0.0.1:25565".to_string(),
-                        enabled: true,
-                    });
-                    self.logs.push("added extra rule".to_string());
-                }
-
-                ui.separator();
-
-                let mut remove_index = None;
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-
-                    // rulesに構造体があればここで一覧表示される.
-                    // .enumerate()でiterator(vec等の中身)に順番にidを振り分ける(今回なら -> (id: usize, rule: &mut RouteRule))
-                    for (id, rule) in rules.iter_mut().enumerate() {
-                        // 横並びに配置
-                        ui.horizontal(|ui| {
-                            ui.label("allow");
-                            ui.checkbox(&mut rule.enabled, "");
-                            ui.label("from:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut rule.accept_address)
-                                    .text_color(egui::Color32::WHITE)
-                                    .desired_width(128.),
-                            );
-
-                            ui.label("to:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut rule.backend_address)
-                                    .text_color(egui::Color32::WHITE)
-                                    .desired_width(128.),
-                            );
-
-                            // clickされた時にこの要素全体に振られたidをremove_indexに入れ
-                            // 下のif letへ
-                            if ui.button("-").clicked() {
-                                remove_index = Some(id);
-                                self.logs.push(format!(
-                                    "removed rule [ from: \"{}\", to: \"{}\" ]",
-                                    rule.accept_address,
-                                    rule.backend_address,
-                                ));
+                            for line in self.logs.iter() {
+                                ui.label(line);
                             }
-                        });
-                    }
+                        }
+                    )
                 });
-
-                // 上で指定されたidをvectorのindexにし対応した場所を削除
-                // そのまま上の表示も対応して変わる
-                if let Some(n) = remove_index {
-                    rules.remove(n);
-                }
-            });
         });
     }
 }

@@ -4,7 +4,7 @@ use crate::proxy::proxy_main::PlayerData;
 
 pub fn handle_login_packet(packet_id: i32, payload_slice: &[u8], ctx: &ConnectionContext) -> std::io::Result<PlayerData> {
 
-    let payload_protocol_version = match ctx.protocol_version {
+    match ctx.protocol_version {
         Some(v) => v,
         None => {
             return Err(Error::new(ErrorKind::NotFound, "unexpected protocol_version"))
@@ -24,7 +24,6 @@ pub fn handle_login_packet(packet_id: i32, payload_slice: &[u8], ctx: &Connectio
             let login_data = PlayerData {
                 player_id: payload.minecraft_id,
                 player_uuid: payload.uuid,
-                protocol_version: payload_protocol_version,
                 payload_warning: warning,
                 payload_used_bytes: payload.used_bytes,
             };

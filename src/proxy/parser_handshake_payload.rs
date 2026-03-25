@@ -48,7 +48,7 @@ pub fn parse_handshake_payload(payload_data: &[u8]) -> std::io::Result<HandShake
     let packet_payload = HandShakePayload {
         protocol_version,
         server_address,
-        server_port,
+        _server_port: server_port,
         next_state,
         used_bytes: index,
     };
