@@ -1,4 +1,7 @@
 mod proxy;
+mod save_rules;
+
+use save_rules::save_rules_to_file;
 
 use proxy::proxy_main::{ConnectionContext, ConnectionState, HandShakePayload, LoginStatePayload};
 use proxy::proxy_main::MAX_PACKET_SIZE;
@@ -15,6 +18,7 @@ use proxy::reader_varint_from_packet::read_varint_from_packet;
 use proxy::reader_varint_from_stream::read_varint_from_stream;
 use proxy::writer_packet_data::write_packet_data;
 use proxy::writer_varint_to_stream::write_varint_to_stream;
+use proxy::push_log_line::push_log;
 //use proxy::format_to_hex::format_hex;
 
 // Arc(Atomic Reference Counted)はデータの所有権を複数で持てるようにするもの
@@ -29,16 +33,20 @@ use std::sync::{Arc, RwLock};
 pub type SharedRules = Arc<RwLock<Vec<RouteRule>>>;
 pub type SharedLogs = Arc<RwLock<ProxyLogs>>;
 
+// json等のファイルに状態などを保存できる形式(Serialize),
+// ロードできる形式(Deserialize)にする
+use serde::{Serialize, Deserialize};
+
 // proxy側とegui側で共有したい値
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RouteRule {
     accept_address: String,
     backend_address: String,
     enabled: bool,
 }
 
-// error 共有
-#[derive(Debug)]
+// 共有log
+#[derive(Serialize, Deserialize)]
 pub struct ProxyLogs {
     log: Vec<String>,
 }
@@ -125,12 +133,16 @@ impl eframe::App for MyApp {
         };
 
         // proxy側のログをもらう
-        if let Ok(mut proxy_logs) = self.proxy_logs.write() {
-            // appendでtakeのvector版のようなことができる
-            self.logs.append(&mut proxy_logs.log);
-        } else {
-            self.logs.push("failed to lock proxy logs".to_string())
-        }
+        let mut proxy_logs = match self.proxy_logs.write() {
+            Ok(guard) => guard,
+            Err(_) => {
+                self.logs.push("failed to lock proxy logs".to_string());
+                return;
+            }
+        };
+        // appendでtakeのvector版のようなことができる
+        // 中身が空ならappendされないので常時使用
+        self.logs.append(&mut proxy_logs.log);
 
         // CentralPanelは置かれたほかのパネルの残りの場所を埋めるパネル的なもの
         egui::CentralPanel::default()
@@ -163,13 +175,21 @@ impl eframe::App for MyApp {
                                         self.is_running = true;
 
                                         // 共有する構造体をArc::clone()
+                                        // moveは所有権を渡して安全仕様にするためclone等で渡す
                                         let share_rules = Arc::clone(&self.rules);
                                         let share_proxy_logs = Arc::clone(&self.proxy_logs);
                                         let share_ctx = ctx.clone();
 
+                                        // error用のshare clone
+                                        let log_for_err = Arc::clone(&self.proxy_logs);
+                                        let ctx_for_err = ctx.clone();
+
                                         // proxy本体を起動
                                         let handle = self.runtime.spawn(async move {
-                                            run_proxy(share_rules, share_proxy_logs, share_ctx).await.expect("proxy panic!");
+                                            if let Err(e) = run_proxy(share_rules, share_proxy_logs, share_ctx).await {
+                                                    let error = format!("{e}");
+                                                    push_log(&log_for_err, &ctx_for_err, error)
+                                            }
                                         });
 
                                         self.proxy_task = Some(handle);
@@ -221,6 +241,13 @@ impl eframe::App for MyApp {
                                         enabled: true,
                                     });
                                     self.logs.push("added extra rule".to_string());
+                                }
+
+                                if ui.button("Save rules").clicked() {
+                                    match save_rules_to_file(&rules) {
+                                        Ok(()) => self.logs.push("Saved File!".to_string()),
+                                        Err(e) => self.logs.push(format!("{e}")),
+                                    }
                                 }
                                 ui.label("from[domain_ip] to[server_ip:port]")
                             });
@@ -284,6 +311,8 @@ impl eframe::App for MyApp {
                         |ui| {
 
                             ui.heading("logs");
+
+                            ui.separator();
 
                             // スクロールエリアが二つある場合など, idを振り分けないと
                             // スクロールバードラッグ中などにidによって操作の制御があるためwarningが出る.

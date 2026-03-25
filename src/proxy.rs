@@ -10,6 +10,6 @@ pub(crate) mod handler_login_packet;
 pub(crate) mod handler_handshaking_packet;
 pub(crate) mod writer_varint_to_stream;
 pub(crate) mod writer_packet_data;
-mod push_log_line;
+pub(crate) mod push_log_line;
 //pub(crate) mod format_to_hex;
 
