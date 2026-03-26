@@ -1,9 +1,29 @@
+use crate::rewrite_path;
 use crate::RouteRule;
 
-pub fn save_rules_to_file(rules: &[RouteRule]) -> std::io::Result<()> {
-    
+pub fn save_rules_to_file(save_dir: bool, rules: &[RouteRule]) -> std::io::Result<()> {
+
     let list_json = serde_json::to_vec_pretty(rules)?;
-    std::fs::write("server_list.json", list_json)?;
+
+    let file_path = directories::ProjectDirs::from(
+        "jp",
+        "natuyade",
+        "mc-proxy"
+    );
+
+    let path = match file_path {
+        Some(p) => p,
+        None => return Err(std::io::Error::new(std::io::ErrorKind::NotADirectory, "Not found a local appdata directory."))
+    };
+    let local_appdata_path = directories::ProjectDirs::config_local_dir(&path);
+
+    let rewrote_path = rewrite_path(local_appdata_path, "rule_list", "json");
+
+    if save_dir == true {
+        std::fs::write(rewrote_path, list_json)?;
+    } else {
+        std::fs::write("rule_list.json", list_json)?;
+    }
 
     Ok(())
 }

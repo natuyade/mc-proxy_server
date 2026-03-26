@@ -1,7 +1,10 @@
+#![windows_subsystem = "windows"]
 mod proxy;
 mod save_rules;
+mod rewrite_path;
 
 use save_rules::save_rules_to_file;
+use rewrite_path::rewrite_path;
 
 use proxy::proxy_main::{ConnectionContext, ConnectionState, HandShakePayload, LoginStatePayload};
 use proxy::proxy_main::MAX_PACKET_SIZE;
@@ -55,6 +58,7 @@ struct MyApp {
     rules: SharedRules,
     logs: Vec<String>,
     is_running: bool,
+    save_dir: bool,
     runtime: Arc<tokio::runtime::Runtime>,
     proxy_task: Option<tokio::task::JoinHandle<()>>,
     proxy_logs: SharedLogs,
@@ -65,7 +69,7 @@ fn main() -> eframe::Result<()> {
     let runtime = Arc::new(tokio::runtime::Runtime::new().expect("failed to create runtime."));
 
     let icon = eframe::icon_data::from_png_bytes(
-        include_bytes!("assets/images/icon.png"))
+        include_bytes!("../assets/images/icon.png"))
         .expect("failed to load a icon");
 
     let options = eframe::NativeOptions {
@@ -79,7 +83,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Mc proxy server",
         options,
-        Box::new(|cc| Ok(Box::new(MyApp::new(cc, runtime)))),
+        Box::new(|cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(MyApp::new(cc, runtime)))
+        }),
     )
 }
 
@@ -97,7 +104,7 @@ impl MyApp {
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "unifont".to_owned(),
-            Arc::new(egui::FontData::from_static(include_bytes!("assets/fonts/unifont-17.0.03.otf"))
+            Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/unifont-17.0.03.otf"))
             ));
         fonts.families.get_mut(&eframe::epaint::FontFamily::Proportional).unwrap().insert(0, "unifont".to_owned());
 
@@ -111,6 +118,7 @@ impl MyApp {
             }])),
             logs: vec!["App started!".to_string(), "Saving logs is not yet available.".to_string()],
             is_running: false,
+            save_dir: false,
             runtime,
             proxy_task: None,
             proxy_logs: Arc::new(RwLock::new(ProxyLogs {
@@ -157,6 +165,8 @@ impl eframe::App for MyApp {
                 let left_width = 380.;
                 let right_width = (full_x - gap) - left_width;
 
+                let setting_icon = egui::include_image!("../assets/images/setting.png");
+
                 // 上揃いの横並び
                 ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(
@@ -164,7 +174,36 @@ impl eframe::App for MyApp {
                         // ui中の要素の軸と交差側の寄せる側を指定
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
-                            ui.heading("Minecraft Proxy GUI");
+                            ui.horizontal_top(|ui| {
+                                ui.heading("Minecraft Proxy GUI");
+
+                                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                                    ui.menu_image_button(setting_icon, |ui| {
+                                        egui::containers::menu::SubMenuButton::new("SaveDirectory")
+                                            .config(egui::containers::menu::MenuConfig::default()
+                                                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                            ).ui(ui, |ui| {
+
+                                            if ui.button("Change").clicked() {
+                                                self.save_dir = match self.save_dir {
+                                                    true => false,
+                                                    false => true,
+                                                }
+                                            }
+                                        });
+                                    });
+                                    ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                                        ui.horizontal(|ui| {
+                                            if self.save_dir == true {
+                                                ui.label("LocalAppData");
+                                            } else {
+                                                ui.label("RelativePath");
+                                            }
+                                            ui.label("Save to");
+                                        })
+                                    })
+                                });
+                            });
 
                             ui.horizontal(|ui| {
 
@@ -244,7 +283,10 @@ impl eframe::App for MyApp {
                                 }
 
                                 if ui.button("Save rules").clicked() {
-                                    match save_rules_to_file(&rules) {
+
+                                    let where_save = self.save_dir.clone();
+
+                                    match save_rules_to_file(where_save, &rules) {
                                         Ok(()) => self.logs.push("Saved File!".to_string()),
                                         Err(e) => self.logs.push(format!("{e}")),
                                     }
