@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-pub fn rewrite_path(file_path_into: impl Into<PathBuf>, file_name: impl Into<String>, file_extension: impl Into<String>) -> PathBuf {
+pub fn rewrite_path(file_path_into: impl Into<PathBuf>, file_name: impl Into<String>, file_extension: impl Into<String>) -> (PathBuf, PathBuf) {
     // &OsStrとかOsStringは初めて見ました.
     // でも見た感じとかメソッド探索で覚えれそうです
 
@@ -30,8 +30,9 @@ pub fn rewrite_path(file_path_into: impl Into<PathBuf>, file_name: impl Into<Str
     extension.push(new_extension);
 
     let mut new_file_path = file_path.clone();
+    let dir_path = file_path.clone();
     new_file_path.set_file_name(stem);
     new_file_path.set_extension(extension);
 
-    new_file_path
+    (new_file_path, dir_path)
 }

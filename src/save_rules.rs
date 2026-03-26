@@ -13,14 +13,21 @@ pub fn save_rules_to_file(save_dir: bool, rules: &[RouteRule]) -> std::io::Resul
 
     let path = match file_path {
         Some(p) => p,
-        None => return Err(std::io::Error::new(std::io::ErrorKind::NotADirectory, "Not found a local appdata directory."))
+        None => return Err(std::io::Error::new(std::io::ErrorKind::NotSeekable, "No valid home directory path could be retrieved from the operating system."))
     };
+
     let local_appdata_path = directories::ProjectDirs::config_local_dir(&path);
 
-    let rewrote_path = rewrite_path(local_appdata_path, "rule_list", "json");
+    let (rewrote_path_file, rewrote_path_dir) = rewrite_path(local_appdata_path, "rule_list", "json");
 
     if save_dir == true {
-        std::fs::write(rewrote_path, list_json)?;
+        match std::fs::write(&rewrote_path_file, &list_json) {
+            Ok(()) => {}
+            Err(_) => {
+                std::fs::create_dir_all(&rewrote_path_dir)?;
+                std::fs::write(&rewrote_path_file, &list_json)?
+            }
+        }
     } else {
         std::fs::write("rule_list.json", list_json)?;
     }
