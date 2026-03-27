@@ -1,13 +1,26 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-pub fn rewrite_path(file_path_into: impl Into<PathBuf>, file_name: impl Into<String>, file_extension: impl Into<String>) -> (PathBuf, PathBuf) {
+pub fn rewrite_path(file_name: impl Into<String>, file_extension: impl Into<String>) -> std::io::Result<(PathBuf, PathBuf)> {
     // &OsStrとかOsStringは初めて見ました.
     // でも見た感じとかメソッド探索で覚えれそうです
+    
+    let file_path = directories::ProjectDirs::from(
+        "jp",
+        "natuyade",
+        "mc-proxy"
+    );
+
+    let path = match file_path {
+        Some(p) => p,
+        None => return Err(std::io::Error::new(std::io::ErrorKind::NotSeekable, "No valid home directory path could be retrieved from the operating system."))
+    };
+
+    let local_appdata_path = directories::ProjectDirs::config_local_dir(&path);
 
     // stemはファイルの名前全体の幹の部分(拡張子を除いた名前の部分)
     // extensionはその名の通り, 拡張子のことを表す
-    let mut file_path = file_path_into.into();
+    let mut file_path = local_appdata_path.to_path_buf();
     let file_stem = file_name.into();
     let file_extension = file_extension.into();
 
@@ -25,5 +38,5 @@ pub fn rewrite_path(file_path_into: impl Into<PathBuf>, file_name: impl Into<Str
     file_path.set_file_name(stem);
     file_path.set_extension(extension);
 
-    (file_path, dir_path)
+    Ok((file_path, dir_path))
 }

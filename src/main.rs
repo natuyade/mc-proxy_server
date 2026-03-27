@@ -2,9 +2,11 @@
 mod proxy;
 mod save_rules;
 mod rewrite_path;
+mod load_rules;
 
 use save_rules::save_rules_to_file;
 use rewrite_path::rewrite_path;
+use load_rules::load_rules_from_file;
 
 use proxy::proxy_main::{ConnectionContext, ConnectionState, HandShakePayload, LoginStatePayload};
 use proxy::proxy_main::MAX_PACKET_SIZE;
@@ -110,12 +112,19 @@ impl MyApp {
 
         cc.egui_ctx.set_fonts(fonts);
 
+        // errでelse処理をする場合のメソッド
+        let rules = load_rules_from_file().unwrap_or_else(|_| {
+            let rules = vec![RouteRule {
+                accept_address: "Enter ip".to_string(),
+                backend_address: "Enter ip:port".to_string(),
+                enabled: false,
+            }];
+            let shared: SharedRules = Arc::new(RwLock::new(rules));
+            shared
+        });
+
         Self {
-            rules: Arc::new(RwLock::new(vec![RouteRule {
-                accept_address: "mc.hypixel.net".to_string(),
-                backend_address: "127.0.0.1:25565".to_string(),
-                enabled: true,
-            }])),
+            rules,
             logs: vec!["App started!".to_string(), "Saving logs is not yet available.".to_string()],
             is_running: false,
             save_dir: false,
