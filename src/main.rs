@@ -32,6 +32,7 @@ use proxy::push_log_line::push_log;
 // 誰かが書き込みしているときは, 他からのReadを制限し安全に書き込める.
 // Read自体は複数から同時にできる
 use std::sync::{Arc, RwLock};
+use egui::Ui;
 
 // typeは型の名前を決めて書きやすくするためのもの
 // {let shared_rules: SharedRules}で設定された型が使える
@@ -138,7 +139,7 @@ impl MyApp {
 }
 
 impl eframe::App for MyApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
 
         // RwLockを何度も外すのが面倒くさいので変数で解除
         let mut rules = match self.rules.write() {
@@ -163,7 +164,7 @@ impl eframe::App for MyApp {
 
         // CentralPanelは置かれたほかのパネルの残りの場所を埋めるパネル的なもの
         egui::CentralPanel::default()
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
 
                 let full_panel_size = ui.available_size();
                 let full_x = full_panel_size[0];
@@ -226,17 +227,17 @@ impl eframe::App for MyApp {
                                         // moveは所有権を渡して安全仕様にするためclone等で渡す
                                         let share_rules = Arc::clone(&self.rules);
                                         let share_proxy_logs = Arc::clone(&self.proxy_logs);
-                                        let share_ctx = ctx.clone();
+                                        let share_ctx = ui.clone();
 
                                         // error用のshare clone
                                         let log_for_err = Arc::clone(&self.proxy_logs);
-                                        let ctx_for_err = ctx.clone();
+                                        let ctx_for_err = ui.clone();
 
                                         // proxy本体を起動
                                         let handle = self.runtime.spawn(async move {
                                             if let Err(e) = run_proxy(share_rules, share_proxy_logs, share_ctx).await {
-                                                    let error = format!("{e}");
-                                                    push_log(&log_for_err, &ctx_for_err, error)
+                                                let error = format!("{e}");
+                                                push_log(&log_for_err, &ctx_for_err, error)
                                             }
                                         });
 
@@ -379,6 +380,6 @@ impl eframe::App for MyApp {
                         }
                     )
                 });
-        });
+            });
     }
 }

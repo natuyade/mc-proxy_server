@@ -57,7 +57,7 @@ pub async fn run_proxy(shared_rules: SharedRules, shared_logs: SharedLogs, ctx: 
     push_log(&shared_logs, &ctx, "Running!");
 
     // Listener::bindで全ての接続の待ち受けアドレスを指定
-    let listener = TcpListener::bind("0.0.0.0:25566").await?;
+    let listener = TcpListener::bind("0.0.0.0:27777").await?;
 
     // サーバーは接続を待ち続ける必要があるためloop
     loop {
