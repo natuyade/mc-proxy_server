@@ -32,12 +32,13 @@ use proxy::push_log_line::push_log;
 // 誰かが書き込みしているときは, 他からのReadを制限し安全に書き込める.
 // Read自体は複数から同時にできる
 use std::sync::{Arc, RwLock};
-use egui::Ui;
+use egui::*;
 
 // typeは型の名前を決めて書きやすくするためのもの
 // {let shared_rules: SharedRules}で設定された型が使える
 pub type SharedRules = Arc<RwLock<Vec<RouteRule>>>;
 pub type SharedLogs = Arc<RwLock<ProxyLogs>>;
+pub type SharedListener = Arc<RwLock<ProxyListener>>;
 
 // json等のファイルに状態などを保存できる形式(Serialize),
 // ロードできる形式(Deserialize)にする
@@ -57,12 +58,18 @@ pub struct ProxyLogs {
     log: Vec<String>,
 }
 
+pub struct ProxyListener {
+    ip_port: String,
+}
+
 struct MyApp {
     rules: SharedRules,
     logs: Vec<String>,
     is_running: bool,
     save_dir: bool,
     runtime: Arc<tokio::runtime::Runtime>,
+    listener_ip: String,
+    proxy_listener: SharedListener,
     proxy_task: Option<tokio::task::JoinHandle<()>>,
     proxy_logs: SharedLogs,
 }
@@ -76,10 +83,10 @@ fn main() -> eframe::Result<()> {
         .expect("failed to load a icon");
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+        viewport: ViewportBuilder::default()
             .with_icon(icon)
-            .with_inner_size(egui::Vec2::new(800., 460.))
-            .with_min_inner_size(egui::Vec2::new(460., 0.)),
+            .with_inner_size(Vec2::new(800., 460.))
+            .with_min_inner_size(Vec2::new(460., 0.)),
         ..Default::default()
     };
 
@@ -97,19 +104,19 @@ fn main() -> eframe::Result<()> {
 impl MyApp {
     fn new(cc: &eframe::CreationContext, runtime: Arc<tokio::runtime::Runtime>) -> Self {
 
-        let mut visuals = egui::Visuals::light();
-        visuals.panel_fill = egui::Color32::LIGHT_GRAY;
-        visuals.override_text_color = Some(egui::Color32::DARK_GRAY);
-        visuals.text_edit_bg_color = Some(egui::Color32::BLACK);
+        let mut visuals = Visuals::light();
+        visuals.panel_fill = Color32::LIGHT_GRAY;
+        visuals.override_text_color = Some(Color32::DARK_GRAY);
+        visuals.text_edit_bg_color = Some(Color32::BLACK);
 
         cc.egui_ctx.set_visuals(visuals);
 
-        let mut fonts = egui::FontDefinitions::default();
+        let mut fonts = FontDefinitions::default();
         fonts.font_data.insert(
             "unifont".to_owned(),
-            Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/unifont-17.0.03.otf"))
+            Arc::new(FontData::from_static(include_bytes!("../assets/fonts/unifont-17.0.03.otf"))
             ));
-        fonts.families.get_mut(&eframe::epaint::FontFamily::Proportional).unwrap().insert(0, "unifont".to_owned());
+        fonts.families.get_mut(&FontFamily::Proportional).unwrap().insert(0, "unifont".to_owned());
 
         cc.egui_ctx.set_fonts(fonts);
 
@@ -128,8 +135,12 @@ impl MyApp {
             rules,
             logs: vec!["App started!".to_string(), "Saving logs is not yet available.".to_string()],
             is_running: false,
-            save_dir: false,
+            save_dir: false,// true = LocalAppData, false = RelativePath
             runtime,
+            listener_ip: "127.0.0.1:25565".to_string(),
+            proxy_listener: Arc::new(RwLock::new(ProxyListener {
+                ip_port: String::new()
+            })),
             proxy_task: None,
             proxy_logs: Arc::new(RwLock::new(ProxyLogs {
                 log: Vec::new(),
@@ -163,7 +174,7 @@ impl eframe::App for MyApp {
         self.logs.append(&mut proxy_logs.log);
 
         // CentralPanelは置かれたほかのパネルの残りの場所を埋めるパネル的なもの
-        egui::CentralPanel::default()
+        CentralPanel::default()
             .show_inside(ui, |ui| {
 
                 let full_panel_size = ui.available_size();
@@ -175,23 +186,23 @@ impl eframe::App for MyApp {
                 let left_width = 380.;
                 let right_width = (full_x - gap) - left_width;
 
-                let setting_icon = egui::include_image!("../assets/images/setting.png");
+                let setting_icon = include_image!("../assets/images/setting.png");
 
                 // 上揃いの横並び
                 ui.horizontal_top(|ui| {
                     ui.allocate_ui_with_layout(
-                        egui::vec2(left_width, full_y),
+                        vec2(left_width, full_y),
                         // ui中の要素の軸と交差側の寄せる側を指定
-                        egui::Layout::top_down(egui::Align::Min),
+                        Layout::top_down(Align::Min),
                         |ui| {
                             ui.horizontal_top(|ui| {
                                 ui.heading("Minecraft Proxy GUI");
 
-                                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                                ui.with_layout(Layout::top_down(Align::Max), |ui| {
                                     ui.menu_image_button(setting_icon, |ui| {
-                                        egui::containers::menu::SubMenuButton::new("SaveDirectory")
-                                            .config(egui::containers::menu::MenuConfig::default()
-                                                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                                        containers::menu::SubMenuButton::new("SaveDirectory")
+                                            .config(containers::menu::MenuConfig::default()
+                                                .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
                                             ).ui(ui, |ui| {
 
                                             if ui.button("Change").clicked() {
@@ -202,13 +213,16 @@ impl eframe::App for MyApp {
                                             }
                                         });
                                     });
-                                    ui.with_layout(egui::Layout::left_to_right(egui::Align::default()), |ui| {
-                                        ui.label("Save to");
-                                        if self.save_dir == true {
-                                            ui.label("LocalAppData");
-                                        } else {
-                                            ui.label("RelativePath");
-                                        }
+                                    ui.with_layout(Layout::right_to_left(Align::default()), |ui| {
+                                        ui.label("Set Listener[ip:port]")
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::default()), |ui| {
+                                        ui.add_enabled_ui(!self.is_running, |ui| {
+                                            ui.add(TextEdit::singleline(&mut self.listener_ip)
+                                                .text_color(Color32::WHITE)
+                                                .desired_width(128.),
+                                            );
+                                        });
                                     })
                                 });
                             });
@@ -226,6 +240,11 @@ impl eframe::App for MyApp {
                                         let share_rules = Arc::clone(&self.rules);
                                         let share_proxy_logs = Arc::clone(&self.proxy_logs);
                                         let share_ctx = ui.clone();
+                                        
+                                        let share_listener_ip = Arc::clone(&self.proxy_listener);
+                                        if let Ok(mut guard) = share_listener_ip.write() {
+                                            guard.ip_port = self.listener_ip.clone()
+                                        }
 
                                         // error用のshare clone
                                         let log_for_err = Arc::clone(&self.proxy_logs);
@@ -233,7 +252,7 @@ impl eframe::App for MyApp {
 
                                         // proxy本体を起動
                                         let handle = self.runtime.spawn(async move {
-                                            if let Err(e) = run_proxy(share_rules, share_proxy_logs, share_ctx).await {
+                                            if let Err(e) = run_proxy(share_listener_ip, share_rules, share_proxy_logs, share_ctx).await {
                                                 let error = format!("{e}");
                                                 push_log(&log_for_err, &ctx_for_err, error)
                                             }
@@ -268,14 +287,35 @@ impl eframe::App for MyApp {
 
                                     ui.label("ProxyServer:");
                                     if self.proxy_task.is_none() {
-                                        ui.colored_label(egui::Color32::RED, "Stopped")
+                                        ui.colored_label(Color32::RED, "Stopped")
                                     } else {
-                                        ui.colored_label(egui::Color32::GREEN, "Started")
+                                        ui.colored_label(Color32::GREEN, "Started")
                                     }
                                 });
                             });
 
                             // uiを分ける線を描画
+                            ui.separator();
+
+                            ui.horizontal(|ui| {
+                                if ui.button("Save rules").clicked() {
+
+                                    let where_save = self.save_dir.clone();
+
+                                    match save_rules_to_file(where_save, &rules) {
+                                        Ok(()) => self.logs.push("Saved File!".to_string()),
+                                        Err(e) => self.logs.push(format!("{e}")),
+                                    }
+                                }
+
+                                ui.label("Save to");
+                                if self.save_dir == true {
+                                    ui.label("LocalAppData");
+                                } else {
+                                    ui.label("RelativePath");
+                                }
+                            });
+
                             ui.separator();
 
                             // buttonが押されたときにrulesVecに構造体をpushする.
@@ -289,16 +329,6 @@ impl eframe::App for MyApp {
                                     });
                                     self.logs.push("added extra rule".to_string());
                                 }
-
-                                if ui.button("Save rules").clicked() {
-
-                                    let where_save = self.save_dir.clone();
-
-                                    match save_rules_to_file(where_save, &rules) {
-                                        Ok(()) => self.logs.push("Saved File!".to_string()),
-                                        Err(e) => self.logs.push(format!("{e}")),
-                                    }
-                                }
                                 ui.label("from[domain_ip] to[server_ip:port]")
                             });
 
@@ -307,7 +337,7 @@ impl eframe::App for MyApp {
                             let mut remove_index = None;
 
                             ui.push_id("lists panel", |ui| {
-                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                ScrollArea::vertical().show(ui, |ui| {
 
                                     // rulesに構造体があればここで一覧表示される.
                                     // .enumerate()でiterator(vec等の中身)に順番にidを振り分ける(今回なら -> (id: usize, rule: &mut RouteRule))
@@ -318,15 +348,15 @@ impl eframe::App for MyApp {
                                             ui.checkbox(&mut rule.enabled, "");
                                             ui.label("from:");
                                             ui.add(
-                                                egui::TextEdit::singleline(&mut rule.accept_address)
-                                                    .text_color(egui::Color32::WHITE)
+                                                TextEdit::singleline(&mut rule.accept_address)
+                                                    .text_color(Color32::WHITE)
                                                     .desired_width(90.),
                                             );
 
                                             ui.label("to:");
                                             ui.add(
-                                                egui::TextEdit::singleline(&mut rule.backend_address)
-                                                    .text_color(egui::Color32::WHITE)
+                                                TextEdit::singleline(&mut rule.backend_address)
+                                                    .text_color(Color32::WHITE)
                                                     .desired_width(128.),
                                             );
 
@@ -356,8 +386,8 @@ impl eframe::App for MyApp {
                     ui.separator();
 
                     ui.allocate_ui_with_layout(
-                        egui::vec2(right_width, full_y),
-                        egui::Layout::top_down(egui::Align::Min),
+                        vec2(right_width, full_y),
+                        Layout::top_down(Align::Min),
                         |ui| {
 
                             ui.heading("logs");
@@ -368,7 +398,7 @@ impl eframe::App for MyApp {
                             // スクロールバードラッグ中などにidによって操作の制御があるためwarningが出る.
                             // id_salt()メソッドがあったので多分それでも行ける
                             ui.push_id("logs panel", |ui| {
-                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                ScrollArea::vertical().show(ui, |ui| {
 
                                     for line in self.logs.iter() {
                                         ui.label(line);

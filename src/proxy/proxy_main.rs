@@ -1,7 +1,7 @@
 use tokio::net::{TcpListener, TcpStream};
 use std::io::{Error, ErrorKind};
 use std::sync::Arc;
-use crate::{read_packet_data, read_varint_from_packet, handle_handshaking_packet, write_packet_data, handle_status_packet, handle_login_packet};
+use crate::{read_packet_data, read_varint_from_packet, handle_handshaking_packet, write_packet_data, handle_status_packet, handle_login_packet, SharedListener};
 
 use crate::{SharedRules, SharedLogs};
 use crate::proxy::push_log_line::push_log;
@@ -53,11 +53,16 @@ pub const MAX_PACKET_SIZE: usize = 1024 * 1024;
 #[tokio::main]
  */
 
-pub async fn run_proxy(shared_rules: SharedRules, shared_logs: SharedLogs, ctx: egui::Context) -> Result<(), Error> {
+pub async fn run_proxy(shared_addr: SharedListener, shared_rules: SharedRules, shared_logs: SharedLogs, ctx: egui::Context) -> Result<(), Error> {
     push_log(&shared_logs, &ctx, "Running!");
 
+    let mut listener_addr = String::new();
+    if let Ok(addr) = shared_addr.read() {
+        listener_addr = addr.ip_port.to_string();
+    }
+
     // Listener::bindで全ての接続の待ち受けアドレスを指定
-    let listener = TcpListener::bind("0.0.0.0:27777").await?;
+    let listener = TcpListener::bind(listener_addr).await?;
 
     // サーバーは接続を待ち続ける必要があるためloop
     loop {
@@ -169,12 +174,12 @@ pub async fn handle_client(mut client_stream: TcpStream, shared_rules: SharedRul
             ConnectionState::Status => {
                 handle_status_packet(packet_id, payload_slice, &connection_ctx)?;
 
-                let server = match backend.as_mut() {
+                let mut server = match backend.as_mut() {
                     Some(s) => s,
                     None => return Err(Error::new(ErrorKind::NotConnected, "failed to connect to backend"))
                 };
                 // packetのraw dataを送信
-                write_packet_data(server, &packet_data).await?;
+                write_packet_data(&mut server, &packet_data).await?;
 
                 // 0x01の場合は現状relay側で実装されるので
                 // 分岐処理は書く必要性は極めて低いので無し
