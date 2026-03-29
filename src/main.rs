@@ -202,15 +202,13 @@ impl eframe::App for MyApp {
                                             }
                                         });
                                     });
-                                    ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
-                                        ui.horizontal(|ui| {
-                                            if self.save_dir == true {
-                                                ui.label("LocalAppData");
-                                            } else {
-                                                ui.label("RelativePath");
-                                            }
-                                            ui.label("Save to");
-                                        })
+                                    ui.with_layout(egui::Layout::left_to_right(egui::Align::default()), |ui| {
+                                        ui.label("Save to");
+                                        if self.save_dir == true {
+                                            ui.label("LocalAppData");
+                                        } else {
+                                            ui.label("RelativePath");
+                                        }
                                     })
                                 });
                             });

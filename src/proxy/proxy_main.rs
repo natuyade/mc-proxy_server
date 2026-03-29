@@ -160,9 +160,9 @@ pub async fn handle_client(mut client_stream: TcpStream, shared_rules: SharedRul
                 // Server一覧からのstatus reqかのどれか
 
                 // なのでif letで分岐しているのは正常
-                if let Some(server) = backend.as_mut() {
+                if let Some(mut server) = backend.as_mut() {
                     // packetのraw dataを送信
-                    write_packet_data(server, &packet_data).await?;
+                    write_packet_data(&mut server, &packet_data).await?;
                 }
             }
             // サーバー一覧での表示用
