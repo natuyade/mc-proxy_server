@@ -1,4 +1,4 @@
->### ProxyServer for Minecraft(prot_version774)
+>### ProxyServer for Minecraft
 昔やりたかったMCServer用のProxyServerを作っています.
 
 正直初見の知識ばっかりで苦戦してます(eguiやらTcpStreamやら)
@@ -12,5 +12,5 @@
 ### まだ対応してないもの
 - logの保存
 - 指定した(allowしていない)ServerAddressのブロック機能
-- ProtocolVersion774以降,又は未満のバージョン
+- ProtocolVersion775以降,又は774未満のバージョン
   - 未検証なだけで使用可能なバージョンはいくつか存在する

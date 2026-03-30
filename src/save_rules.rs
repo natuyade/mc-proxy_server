@@ -5,9 +5,10 @@ pub fn save_rules_to_file(save_dir: bool, rules: &[RouteRule]) -> std::io::Resul
 
     let list_json = serde_json::to_vec_pretty(rules)?;
 
-    let (rewrote_path_file, rewrote_path_dir) = rewrite_path("rule_list", "json")?;
-
     if save_dir == true {
+        
+        let (rewrote_path_file, rewrote_path_dir) = rewrite_path("rule_list", "json")?;
+        
         match std::fs::write(&rewrote_path_file, &list_json) {
             Ok(()) => {}
             Err(_) => {

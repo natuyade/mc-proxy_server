@@ -1,12 +1,14 @@
-#![windows_subsystem = "windows"]
+//#![windows_subsystem = "windows"]
 mod proxy;
 mod save_rules;
 mod rewrite_path;
 mod load_rules;
+mod save_logs;
 
 use save_rules::save_rules_to_file;
 use rewrite_path::rewrite_path;
 use load_rules::load_rules_from_file;
+use save_logs::save_logs_to_file;
 
 use proxy::proxy_main::{ConnectionContext, ConnectionState, HandShakePayload, LoginStatePayload};
 use proxy::proxy_main::MAX_PACKET_SIZE;
@@ -131,11 +133,34 @@ impl MyApp {
             shared
         });
 
+        let save_dir = match directories::ProjectDirs::from(
+            "jp",
+            "natuyade",
+            "mc-proxy"
+        ) {
+            Some(path) => {
+                let local = directories::ProjectDirs::config_local_dir(&path);
+
+                let mut dir_path = local.to_path_buf();
+
+                dir_path.set_file_name("");
+                dir_path.set_extension("");
+
+                // localにfolderがあれば初期設定をlocalに向ける
+                let dir = match std::fs::read_dir(dir_path) {
+                    Ok(_) => true,
+                    Err(_) => false
+                };
+                dir
+            }
+            None => false
+        };
+
         Self {
             rules,
             logs: vec!["App started!".to_string(), "Saving logs is not yet available.".to_string()],
             is_running: false,
-            save_dir: false,// true = LocalAppData, false = RelativePath
+            save_dir,// true = LocalAppData, false = RelativePath
             runtime,
             listener_ip: "127.0.0.1:25565".to_string(),
             proxy_listener: Arc::new(RwLock::new(ProxyListener {
@@ -406,5 +431,10 @@ impl eframe::App for MyApp {
                     )
                 });
             });
+    }
+
+    fn on_exit(&mut self) {
+        let where_save = self.save_dir.clone();
+        save_logs_to_file(where_save, &self.logs)
     }
 }
