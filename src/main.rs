@@ -84,7 +84,7 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
-            .with_icon(icon)
+            .with_icon(icon.clone())
             .with_inner_size(Vec2::new(800., 460.))
             .with_min_inner_size(Vec2::new(460., 0.)),
         ..Default::default()
@@ -206,10 +206,7 @@ impl eframe::App for MyApp {
                                             ).ui(ui, |ui| {
 
                                             if ui.button("Change").clicked() {
-                                                self.save_dir = match self.save_dir {
-                                                    true => false,
-                                                    false => true,
-                                                }
+                                                self.save_dir = !self.save_dir
                                             }
                                         });
                                     });
@@ -240,7 +237,7 @@ impl eframe::App for MyApp {
                                         let share_rules = Arc::clone(&self.rules);
                                         let share_proxy_logs = Arc::clone(&self.proxy_logs);
                                         let share_ctx = ui.clone();
-                                        
+
                                         let share_listener_ip = Arc::clone(&self.proxy_listener);
                                         if let Ok(mut guard) = share_listener_ip.write() {
                                             guard.ip_port = self.listener_ip.clone()
