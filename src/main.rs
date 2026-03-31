@@ -74,6 +74,7 @@ struct MyApp {
     proxy_listener: SharedListener,
     proxy_task: Option<tokio::task::JoinHandle<()>>,
     proxy_logs: SharedLogs,
+    confirm_window: bool,
 }
 
 fn main() -> eframe::Result<()> {
@@ -158,7 +159,7 @@ impl MyApp {
 
         Self {
             rules,
-            logs: vec!["App started!".to_string(), "Saving logs is not yet available.".to_string()],
+            logs: vec!["App started!".to_string(), "github: https://github.com/natuyade/mc-proxy_server".to_string()],
             is_running: false,
             save_dir,// true = LocalAppData, false = RelativePath
             runtime,
@@ -170,6 +171,7 @@ impl MyApp {
             proxy_logs: Arc::new(RwLock::new(ProxyLogs {
                 log: Vec::new(),
             })),
+            confirm_window: false,
         }
     }
 }
@@ -212,6 +214,7 @@ impl eframe::App for MyApp {
                 let right_width = (full_x - gap) - left_width;
 
                 let setting_icon = include_image!("../assets/images/setting.png");
+                let power_icon = include_image!("../assets/images/power.png");
 
                 // 上揃いの横並び
                 ui.horizontal_top(|ui| {
@@ -224,6 +227,14 @@ impl eframe::App for MyApp {
                                 ui.heading("Minecraft Proxy GUI");
 
                                 ui.with_layout(Layout::top_down(Align::Max), |ui| {
+
+
+                                    if ui.add(Button::image(power_icon)).clicked() {
+                                        if self.confirm_window == false {
+                                            self.confirm_window = true
+                                        }
+                                    }
+
                                     ui.menu_image_button(setting_icon, |ui| {
                                         containers::menu::SubMenuButton::new("SaveDirectory")
                                             .config(containers::menu::MenuConfig::default()
@@ -433,8 +444,24 @@ impl eframe::App for MyApp {
             });
     }
 
+    fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        if self.confirm_window == true {
+            Window::new("really?").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Yes").clicked() {
+                        ui.send_viewport_cmd(ViewportCommand::Close)
+                    }
+                    ui.label("/");
+                    if ui.button("no").clicked() {
+                        self.confirm_window = false
+                    }
+                });
+            });
+        }
+    }
+
     fn on_exit(&mut self) {
         let where_save = self.save_dir.clone();
-        save_logs_to_file(where_save, &self.logs)
+        save_logs_to_file(where_save, &self.logs);
     }
 }
