@@ -30,13 +30,15 @@ pub fn rewrite_path(file_name: impl Into<String>, file_extension: impl Into<Stri
     stem.push(file_stem);
     extension.push(file_extension);
 
+    // pathを先に完成させることで
+    // file_nameでdir入力に対応させました
+    file_path.set_file_name(stem);
+    file_path.set_extension(extension);
+
     let mut dir_path = file_path.clone();
 
     dir_path.set_file_name("");
     dir_path.set_extension("");
-
-    file_path.set_file_name(stem);
-    file_path.set_extension(extension);
 
     Ok((file_path, dir_path))
 }

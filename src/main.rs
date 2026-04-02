@@ -65,6 +65,7 @@ pub struct ProxyListener {
 }
 
 struct MyApp {
+    window_size: Vec2,
     rules: SharedRules,
     logs: Vec<String>,
     is_running: bool,
@@ -108,9 +109,16 @@ impl MyApp {
     fn new(cc: &eframe::CreationContext, runtime: Arc<tokio::runtime::Runtime>) -> Self {
 
         let mut visuals = Visuals::light();
-        visuals.panel_fill = Color32::LIGHT_GRAY;
+        visuals.panel_fill = Color32::from_rgb(240, 240, 240);
         visuals.override_text_color = Some(Color32::DARK_GRAY);
         visuals.text_edit_bg_color = Some(Color32::BLACK);
+        visuals.disabled_alpha = 0.88;
+        visuals.window_shadow = Shadow {
+            offset: [1.0 as i8, 2.0 as i8],
+            blur: 1u8,
+            spread: 1u8,
+            color: Default::default(),
+        };
 
         cc.egui_ctx.set_visuals(visuals);
 
@@ -158,6 +166,7 @@ impl MyApp {
         };
 
         Self {
+            window_size: Vec2::ZERO,
             rules,
             logs: vec!["App started!".to_string(), "github: https://github.com/natuyade/mc-proxy_server".to_string()],
             is_running: false,
@@ -177,6 +186,75 @@ impl MyApp {
 }
 
 impl eframe::App for MyApp {
+    fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+
+        let size_x = self.window_size[0];
+        let size_y = self.window_size[1];
+
+        let sd_window_size = Vec2::new(186., 40.);
+
+        let sd_size_x = sd_window_size[0];
+        let sd_size_y = sd_window_size[1];
+
+        if self.confirm_window == true {
+
+            Window::new("shutdown window")
+                .title_bar(false)
+                .fixed_pos(Pos2::new(
+                    (size_x / 2.) - (sd_size_x / 2.), (size_y / 2.) - (sd_size_y / 2.)
+                ))
+                .resizable(false)
+                .collapsible(false)
+                .movable(false)
+                .show(ctx, |ui| {
+
+                    ui.set_min_size(sd_window_size);
+                    ui.allocate_ui_with_layout(sd_window_size, Layout::top_down(Align::Center), |ui| {
+
+                        let tab_size_x = ui.available_size()[0];
+                        let tab_size_y = 16.;
+
+                        Frame::new()
+                            .fill(Color32::LIGHT_GRAY)
+                            .show(ui, |ui| {
+                            ui.set_min_size(Vec2::new(tab_size_x, tab_size_y));
+                            ui.add(Label::new(
+                                RichText::new("ShutDown?")
+                                    .size(32.)
+                                    .color(Color32::GRAY)
+                            ));
+                        });
+                    });
+                    ui.allocate_ui_with_layout(sd_window_size, Layout::bottom_up(Align::Center), |ui| {
+
+                        let full_size = ui.available_size();
+
+                        Frame::new()
+                            .fill(Color32::WHITE)
+                            .show(ui, |ui| {
+
+                                ui.set_min_size(full_size);
+
+                                let button_size = Vec2::new(full_size[0], 16.);
+
+                                if ui.add(Button::new("go back app")
+                                    .min_size(button_size)
+                                    .fill(Color32::LIGHT_GREEN)
+                                ).clicked() {
+                                    self.confirm_window = false
+                                }
+                                if ui.add(Button::new("ShutDown")
+                                    .min_size(button_size)
+                                    .fill(Color32::LIGHT_RED)
+                                ).clicked() {
+                                    ui.send_viewport_cmd(ViewportCommand::Close)
+                                }
+                            })
+                    });
+                });
+        }
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
 
         // RwLockを何度も外すのが面倒くさいので変数で解除
@@ -200,264 +278,256 @@ impl eframe::App for MyApp {
         // 中身が空ならappendされないので常時使用
         self.logs.append(&mut proxy_logs.log);
 
-        // CentralPanelは置かれたほかのパネルの残りの場所を埋めるパネル的なもの
-        CentralPanel::default()
-            .show_inside(ui, |ui| {
+        ui.add_enabled_ui(!self.confirm_window, |ui| {
+            // CentralPanelは置かれたほかのパネルの残りの場所を埋めるパネル的なもの
+            CentralPanel::default()
+                .show_inside(ui, |ui| {
 
-                let full_panel_size = ui.available_size();
-                let full_x = full_panel_size[0];
-                let full_y = full_panel_size[1];
+                    let full_panel_size = ui.available_size();
+                    let full_x = full_panel_size[0];
+                    let full_y = full_panel_size[1];
+                    self.window_size = full_panel_size;
 
-                let gap = 32.;
+                    let gap = 32.;
 
-                let left_width = 380.;
-                let right_width = (full_x - gap) - left_width;
+                    let left_width = 380.;
+                    let right_width = (full_x - gap) - left_width;
 
-                let setting_icon = include_image!("../assets/images/setting.png");
-                let power_icon = include_image!("../assets/images/power.png");
+                    let setting_icon = include_image!("../assets/images/setting.png");
+                    let power_icon = include_image!("../assets/images/power.png");
 
-                // 上揃いの横並び
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(
-                        vec2(left_width, full_y),
-                        // ui中の要素の軸と交差側の寄せる側を指定
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            ui.horizontal_top(|ui| {
-                                ui.heading("Minecraft Proxy GUI");
+                    // 上揃いの横並び
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(
+                            vec2(left_width, full_y),
+                            // ui中の要素の軸と交差側の寄せる側を指定
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                ui.horizontal_top(|ui| {
+                                    ui.heading("Minecraft Proxy GUI");
 
-                                ui.with_layout(Layout::top_down(Align::Max), |ui| {
+                                    ui.with_layout(Layout::top_down(Align::Max), |ui| {
 
+                                        ui.horizontal(|ui| {
 
-                                    if ui.add(Button::image(power_icon)).clicked() {
-                                        if self.confirm_window == false {
-                                            self.confirm_window = true
-                                        }
-                                    }
-
-                                    ui.menu_image_button(setting_icon, |ui| {
-                                        containers::menu::SubMenuButton::new("SaveDirectory")
-                                            .config(containers::menu::MenuConfig::default()
-                                                .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
-                                            ).ui(ui, |ui| {
-
-                                            if ui.button("Change").clicked() {
-                                                self.save_dir = !self.save_dir
+                                            if ui.add(Button::image(power_icon)).clicked() {
+                                                if self.confirm_window == false {
+                                                    self.confirm_window = true
+                                                }
                                             }
+                                            ui.menu_image_button(setting_icon, |ui| {
+                                                containers::menu::SubMenuButton::new("SaveDirectory")
+                                                    .config(containers::menu::MenuConfig::default()
+                                                        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+                                                    ).ui(ui, |ui| {
+
+                                                    if ui.button("Change").clicked() {
+                                                        self.save_dir = !self.save_dir
+                                                    }
+                                                });
+                                            });
                                         });
-                                    });
-                                    ui.with_layout(Layout::right_to_left(Align::default()), |ui| {
-                                        ui.label("Set Listener[ip:port]")
-                                    });
-                                    ui.with_layout(Layout::right_to_left(Align::default()), |ui| {
-                                        ui.add_enabled_ui(!self.is_running, |ui| {
-                                            ui.add(TextEdit::singleline(&mut self.listener_ip)
-                                                .text_color(Color32::WHITE)
-                                                .desired_width(128.),
-                                            );
+
+                                        ui.with_layout(Layout::right_to_left(Align::default()), |ui| {
+                                            ui.label("Set Listener[ip:port]")
                                         });
-                                    })
+                                        ui.with_layout(Layout::right_to_left(Align::default()), |ui| {
+                                            ui.add_enabled_ui(!self.is_running, |ui| {
+                                                ui.add(TextEdit::singleline(&mut self.listener_ip)
+                                                           .text_color(Color32::WHITE)
+                                                           .desired_width(128.),
+                                                );
+                                            });
+                                        })
+                                    });
                                 });
-                            });
-
-                            ui.horizontal(|ui| {
-
-                                // proxyの起動ボタン
-                                if ui.button("Start").clicked() {
-                                    if !self.is_running {
-                                        self.logs.push("Starting proxy server...".to_string());
-                                        self.is_running = true;
-
-                                        // 共有する構造体をArc::clone()
-                                        // moveは所有権を渡して安全仕様にするためclone等で渡す
-                                        let share_rules = Arc::clone(&self.rules);
-                                        let share_proxy_logs = Arc::clone(&self.proxy_logs);
-                                        let share_ctx = ui.clone();
-
-                                        let share_listener_ip = Arc::clone(&self.proxy_listener);
-                                        if let Ok(mut guard) = share_listener_ip.write() {
-                                            guard.ip_port = self.listener_ip.clone()
-                                        }
-
-                                        // error用のshare clone
-                                        let log_for_err = Arc::clone(&self.proxy_logs);
-                                        let ctx_for_err = ui.clone();
-
-                                        // proxy本体を起動
-                                        let handle = self.runtime.spawn(async move {
-                                            if let Err(e) = run_proxy(share_listener_ip, share_rules, share_proxy_logs, share_ctx).await {
-                                                let error = format!("{e}");
-                                                push_log(&log_for_err, &ctx_for_err, error)
-                                            }
-                                        });
-
-                                        self.proxy_task = Some(handle);
-
-                                    } else {
-                                        self.logs.push("server is already running.".to_string());
-                                    }
-                                }
-
-                                // proxyの停止ボタン
-                                if ui.button("Stop").clicked() {
-                                    if self.is_running {
-
-                                        // .take()でOptionの中身をもらった後相手のOptionを空にする(貰う)
-                                        if let Some(handle) = self.proxy_task.take() {
-                                            // JoinHandleで紐づいたtaskを.abort()で強制終了する
-                                            handle.abort();
-                                        }
-
-                                        self.logs.push("Stopping proxy Server...".to_string());
-                                        self.is_running = false;
-                                    } else {
-                                        self.logs.push("proxy server is not working.".to_string());
-                                    }
-                                }
 
                                 ui.horizontal(|ui| {
-                                    // taskの有無を見てステータス表示
 
-                                    ui.label("ProxyServer:");
-                                    if self.proxy_task.is_none() {
-                                        ui.colored_label(Color32::RED, "Stopped")
-                                    } else {
-                                        ui.colored_label(Color32::GREEN, "Started")
-                                    }
-                                });
-                            });
+                                    // proxyの起動ボタン
+                                    if ui.button("Start").clicked() {
+                                        if !self.is_running {
+                                            self.logs.push("Starting proxy server...".to_string());
+                                            self.is_running = true;
 
-                            // uiを分ける線を描画
-                            ui.separator();
+                                            // 共有する構造体をArc::clone()
+                                            // moveは所有権を渡して安全仕様にするためclone等で渡す
+                                            let share_rules = Arc::clone(&self.rules);
+                                            let share_proxy_logs = Arc::clone(&self.proxy_logs);
+                                            let share_ctx = ui.clone();
 
-                            ui.horizontal(|ui| {
-                                if ui.button("Save rules").clicked() {
-
-                                    let where_save = self.save_dir.clone();
-
-                                    match save_rules_to_file(where_save, &rules) {
-                                        Ok(()) => self.logs.push("Saved File!".to_string()),
-                                        Err(e) => self.logs.push(format!("{e}")),
-                                    }
-                                }
-
-                                ui.label("Save to");
-                                if self.save_dir == true {
-                                    ui.label("LocalAppData");
-                                } else {
-                                    ui.label("RelativePath");
-                                }
-                            });
-
-                            ui.separator();
-
-                            // buttonが押されたときにrulesVecに構造体をpushする.
-                            // 下のforへ
-                            ui.horizontal(|ui| {
-                                if ui.button("add rule").clicked() {
-                                    rules.push(RouteRule {
-                                        accept_address: String::new(),
-                                        backend_address: "127.0.0.1:25565".to_string(),
-                                        enabled: true,
-                                    });
-                                    self.logs.push("added extra rule".to_string());
-                                }
-                                ui.label("from[domain_ip] to[server_ip:port]")
-                            });
-
-                            ui.separator();
-
-                            let mut remove_index = None;
-
-                            ui.push_id("lists panel", |ui| {
-                                ScrollArea::vertical().show(ui, |ui| {
-
-                                    // rulesに構造体があればここで一覧表示される.
-                                    // .enumerate()でiterator(vec等の中身)に順番にidを振り分ける(今回なら -> (id: usize, rule: &mut RouteRule))
-                                    for (id, rule) in rules.iter_mut().enumerate() {
-                                        // 横並びに配置
-                                        ui.horizontal(|ui| {
-                                            ui.label("allow");
-                                            ui.checkbox(&mut rule.enabled, "");
-                                            ui.label("from:");
-                                            ui.add(
-                                                TextEdit::singleline(&mut rule.accept_address)
-                                                    .text_color(Color32::WHITE)
-                                                    .desired_width(90.),
-                                            );
-
-                                            ui.label("to:");
-                                            ui.add(
-                                                TextEdit::singleline(&mut rule.backend_address)
-                                                    .text_color(Color32::WHITE)
-                                                    .desired_width(128.),
-                                            );
-
-                                            // clickされた時にこの要素全体に振られたidをremove_indexに入れ
-                                            // 下のif letへ
-                                            if ui.button("-").clicked() {
-                                                remove_index = Some(id);
-                                                self.logs.push(format!(
-                                                    "removed rule [ from: \"{}\", to: \"{}\" ]",
-                                                    rule.accept_address,
-                                                    rule.backend_address,
-                                                ));
+                                            let share_listener_ip = Arc::clone(&self.proxy_listener);
+                                            if let Ok(mut guard) = share_listener_ip.write() {
+                                                guard.ip_port = self.listener_ip.clone()
                                             }
-                                        });
+
+                                            // error用のshare clone
+                                            let log_for_err = Arc::clone(&self.proxy_logs);
+                                            let ctx_for_err = ui.clone();
+
+                                            // proxy本体を起動
+                                            let handle = self.runtime.spawn(async move {
+                                                if let Err(e) = run_proxy(share_listener_ip, share_rules, share_proxy_logs, share_ctx).await {
+                                                    let error = format!("{e}");
+                                                    push_log(&log_for_err, &ctx_for_err, error)
+                                                }
+                                            });
+
+                                            self.proxy_task = Some(handle);
+
+                                        } else {
+                                            self.logs.push("server is already running.".to_string());
+                                        }
+                                    }
+
+                                    // proxyの停止ボタン
+                                    if ui.button("Stop").clicked() {
+                                        if self.is_running {
+
+                                            // .take()でOptionの中身をもらった後相手のOptionを空にする(貰う)
+                                            if let Some(handle) = self.proxy_task.take() {
+                                                // JoinHandleで紐づいたtaskを.abort()で強制終了する
+                                                handle.abort();
+                                            }
+
+                                            self.logs.push("Stopping proxy Server...".to_string());
+                                            self.is_running = false;
+                                        } else {
+                                            self.logs.push("proxy server is not working.".to_string());
+                                        }
+                                    }
+
+                                    ui.horizontal(|ui| {
+                                        // taskの有無を見てステータス表示
+
+                                        ui.label("ProxyServer:");
+                                        if self.proxy_task.is_none() {
+                                            ui.colored_label(Color32::RED, "Stopped")
+                                        } else {
+                                            ui.colored_label(Color32::GREEN, "Started")
+                                        }
+                                    });
+                                });
+
+                                // uiを分ける線を描画
+                                ui.separator();
+
+                                ui.horizontal(|ui| {
+                                    if ui.button("Save rules").clicked() {
+
+                                        let where_save = self.save_dir.clone();
+
+                                        match save_rules_to_file(where_save, &rules) {
+                                            Ok(()) => self.logs.push("Saved File!".to_string()),
+                                            Err(e) => self.logs.push(format!("{e}")),
+                                        }
+                                    }
+
+                                    ui.label("Save to");
+                                    if self.save_dir == true {
+                                        ui.label("LocalAppData");
+                                    } else {
+                                        ui.label("RelativePath");
                                     }
                                 });
-                            });
 
-                            // 上で指定されたidをvectorのindexにし対応した場所を削除
-                            // そのまま上の表示も対応して変わる
-                            if let Some(n) = remove_index {
-                                rules.remove(n);
-                            }
-                        }
-                    );
+                                ui.separator();
 
-                    ui.separator();
-
-                    ui.allocate_ui_with_layout(
-                        vec2(right_width, full_y),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-
-                            ui.heading("logs");
-
-                            ui.separator();
-
-                            // スクロールエリアが二つある場合など, idを振り分けないと
-                            // スクロールバードラッグ中などにidによって操作の制御があるためwarningが出る.
-                            // id_salt()メソッドがあったので多分それでも行ける
-                            ui.push_id("logs panel", |ui| {
-                                ScrollArea::vertical().show(ui, |ui| {
-
-                                    for line in self.logs.iter() {
-                                        ui.label(line);
+                                // buttonが押されたときにrulesVecに構造体をpushする.
+                                // 下のforへ
+                                ui.horizontal(|ui| {
+                                    if ui.button("add rule").clicked() {
+                                        rules.push(RouteRule {
+                                            accept_address: String::new(),
+                                            backend_address: "127.0.0.1:25565".to_string(),
+                                            enabled: true,
+                                        });
+                                        self.logs.push("added extra rule".to_string());
                                     }
-                                })
-                            });
-                        }
-                    )
-                });
-            });
-    }
+                                    ui.label("from[domain_ip] to[server_ip:port]")
+                                });
 
-    fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        if self.confirm_window == true {
-            Window::new("really?").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("Yes").clicked() {
-                        ui.send_viewport_cmd(ViewportCommand::Close)
-                    }
-                    ui.label("/");
-                    if ui.button("no").clicked() {
-                        self.confirm_window = false
-                    }
+                                ui.separator();
+
+                                let mut remove_index = None;
+
+                                ui.push_id("lists panel", |ui| {
+                                    ScrollArea::vertical().show(ui, |ui| {
+
+                                        // rulesに構造体があればここで一覧表示される.
+                                        // .enumerate()でiterator(vec等の中身)に順番にidを振り分ける(今回なら -> (id: usize, rule: &mut RouteRule))
+                                        for (id, rule) in rules.iter_mut().enumerate() {
+                                            // 横並びに配置
+                                            ui.horizontal(|ui| {
+                                                ui.label("allow");
+                                                ui.checkbox(&mut rule.enabled, "");
+                                                ui.label("from:");
+                                                ui.add(
+                                                    TextEdit::singleline(&mut rule.accept_address)
+                                                        .text_color(Color32::WHITE)
+                                                        .desired_width(90.),
+                                                );
+
+                                                ui.label("to:");
+                                                ui.add(
+                                                    TextEdit::singleline(&mut rule.backend_address)
+                                                        .text_color(Color32::WHITE)
+                                                        .desired_width(128.),
+                                                );
+
+                                                // clickされた時にこの要素全体に振られたidをremove_indexに入れ
+                                                // 下のif letへ
+                                                if ui.button("-").clicked() {
+                                                    remove_index = Some(id);
+                                                    self.logs.push(format!(
+                                                        "removed rule [ from: \"{}\", to: \"{}\" ]",
+                                                        rule.accept_address,
+                                                        rule.backend_address,
+                                                    ));
+                                                }
+                                            });
+                                        }
+                                    });
+                                });
+
+                                // 上で指定されたidをvectorのindexにし対応した場所を削除
+                                // そのまま上の表示も対応して変わる
+                                if let Some(n) = remove_index {
+                                    rules.remove(n);
+                                }
+                            }
+                        );
+
+                        ui.separator();
+
+                        ui.allocate_ui_with_layout(
+                            vec2(right_width, full_y),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+
+                                ui.heading("logs");
+
+                                ui.separator();
+
+                                let log_size = ui.available_size();
+                                Frame::NONE.fill(Color32::WHITE).show(ui, |ui| {
+                                    ui.set_min_size(log_size);
+                                    // スクロールエリアが二つある場合など, idを振り分けないと
+                                    // スクロールバードラッグ中などにidによって操作の制御があるためwarningが出る.
+                                    // id_salt()メソッドがあったので多分それでも行ける
+                                    ui.push_id("logs panel", |ui| {
+                                        ScrollArea::vertical().show(ui, |ui| {
+                                            for line in self.logs.iter() {
+                                                ui.label(line);
+                                            }
+                                        })
+                                    });
+                                })
+                            }
+                        )
+                    });
                 });
-            });
-        }
+        });
     }
 
     fn on_exit(&mut self) {

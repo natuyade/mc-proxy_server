@@ -3,7 +3,7 @@ use crate::rewrite_path::rewrite_path;
 // 終了時の処理なので一旦unwrapで書いてます
 // 後々error出たらエラー内容の表示ウィンドウを生成して
 // 一旦のログの保存場所をファイル参照などで入力できるようにし
-// 処置できるようにしたい
+// 処置できるようにしたいなーなんて
 pub fn save_logs_to_file(save_dir: bool, logs: &Vec<String>) {
 
     let collect_logs = logs.iter().map(|log| log.to_string()).collect::<Vec<_>>().join("\n");
