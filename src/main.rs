@@ -76,6 +76,10 @@ struct MyApp {
     proxy_task: Option<tokio::task::JoinHandle<()>>,
     proxy_logs: SharedLogs,
     confirm_window: bool,
+    err_while_sd: Option<String>,
+    file_dialog: egui_file_dialog::FileDialog,
+    picked_dir: Option<std::path::PathBuf>,
+    picked_err: Option<String>
 }
 
 fn main() -> eframe::Result<()> {
@@ -181,6 +185,12 @@ impl MyApp {
                 log: Vec::new(),
             })),
             confirm_window: false,
+            err_while_sd: None,
+
+            // for egui-file-dialog
+            file_dialog: egui_file_dialog::FileDialog::new(),
+            picked_dir: None,
+            picked_err: None,
         }
     }
 }
@@ -188,18 +198,23 @@ impl MyApp {
 impl eframe::App for MyApp {
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
 
+        // main window size
         let size_x = self.window_size[0];
         let size_y = self.window_size[1];
 
-        let sd_window_size = Vec2::new(186., 40.);
-
-        let sd_size_x = sd_window_size[0];
-        let sd_size_y = sd_window_size[1];
-
         if self.confirm_window == true {
+
+            let sd_window_size = Vec2::new(186., 56.);
+
+            let sd_size_x = sd_window_size[0];
+            let sd_size_y = sd_window_size[1];
+
+            let sd_tab_size = Vec2::new(sd_size_x, 16.);
+            let sd_ct_size = Vec2::new(sd_size_x, sd_size_y - sd_tab_size[1]);
 
             Window::new("shutdown window")
                 .title_bar(false)
+                // window を中央によせる
                 .fixed_pos(Pos2::new(
                     (size_x / 2.) - (sd_size_x / 2.), (size_y / 2.) - (sd_size_y / 2.)
                 ))
@@ -208,50 +223,202 @@ impl eframe::App for MyApp {
                 .movable(false)
                 .show(ctx, |ui| {
 
-                    ui.set_min_size(sd_window_size);
                     ui.allocate_ui_with_layout(sd_window_size, Layout::top_down(Align::Center), |ui| {
-
-                        let tab_size_x = ui.available_size()[0];
-                        let tab_size_y = 16.;
+                        ui.set_min_size(sd_tab_size);
+                        ui.set_max_size(sd_tab_size);
 
                         Frame::new()
                             .fill(Color32::LIGHT_GRAY)
                             .show(ui, |ui| {
-                            ui.set_min_size(Vec2::new(tab_size_x, tab_size_y));
-                            ui.add(Label::new(
-                                RichText::new("ShutDown?")
-                                    .size(32.)
-                                    .color(Color32::GRAY)
-                            ));
+                            ui.set_min_size(sd_tab_size);
+                            ui.add(
+                                Label::new(
+                                    RichText::new("ShutDown?")
+                                        .size(32.)
+                                        .color(Color32::GRAY)
+                                ).selectable(false)
+                            );
                         });
                     });
-                    ui.allocate_ui_with_layout(sd_window_size, Layout::bottom_up(Align::Center), |ui| {
-
-                        let full_size = ui.available_size();
+                    ui.allocate_ui_with_layout(sd_ct_size, Layout::bottom_up(Align::Center), |ui| {
+                        ui.set_min_size(sd_ct_size);
+                        ui.set_max_size(sd_ct_size);
 
                         Frame::new()
                             .fill(Color32::WHITE)
                             .show(ui, |ui| {
 
-                                ui.set_min_size(full_size);
+                                let button_size = Vec2::new(sd_ct_size[0], 16.);
 
-                                let button_size = Vec2::new(full_size[0], 16.);
-
-                                if ui.add(Button::new("go back app")
+                                if ui.add(Button::new("go back to app")
                                     .min_size(button_size)
                                     .fill(Color32::LIGHT_GREEN)
                                 ).clicked() {
                                     self.confirm_window = false
                                 }
-                                if ui.add(Button::new("ShutDown")
+                                if ui.add(Button::new("Save Logs and ShutDown")
                                     .min_size(button_size)
                                     .fill(Color32::LIGHT_RED)
                                 ).clicked() {
-                                    ui.send_viewport_cmd(ViewportCommand::Close)
+                                    ctx.send_viewport_cmd(ViewportCommand::Close)
                                 }
                             })
                     });
                 });
+        }
+
+        // shutdown時の処理
+        if ctx.input(|i| i.viewport().close_requested()) {
+
+            let save_dir = self.save_dir.clone();
+
+                // for debug!
+                //
+                //let mut error: Option<std::io::Error> = None;
+                //error = Some(std::io::Error::new(std::io::ErrorKind::NotADirectory, "dir error(仮)"));
+                //if let Some(kari_error) = error {
+                //    self.err_while_sd = Some(format!("{kari_error}"));
+                //    ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                //}
+
+            if let Err(e) = save_logs_to_file(save_dir, &self.logs, None) {
+                self.err_while_sd = Some(format!("{e}"))
+            }
+        }
+
+        if self.err_while_sd.is_some() {
+
+            let err_window_size = Vec2::new(240., 64.);
+
+            let err_size_x = err_window_size[0];
+            let err_size_y = err_window_size[1];
+
+            let err_tab_size = Vec2::new(err_size_x, 16.);
+            let err_ct_size = Vec2::new(err_size_x, err_size_y - err_tab_size[1]);
+
+            if let Some(what_err) = &self.err_while_sd {
+
+                Window::new("shutdown error")
+                    .title_bar(false)
+                    .fixed_pos(Pos2::new(
+                        (size_x / 2.) - (err_size_x / 2.), (size_y / 2.) - (err_size_y / 2.)
+                    ))
+                    .resizable(false)
+                    .collapsible(false)
+                    .movable(false)
+                    .show(ctx, |ui| {
+
+                        ui.allocate_ui_with_layout(err_tab_size, Layout::top_down(Align::Center), |ui| {
+                            ui.set_min_size(err_tab_size);
+                            ui.set_max_size(err_tab_size);
+
+                            Frame::new()
+                                .fill(Color32::WHITE)
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        Label::new(RichText::new("Error!")
+                                            .color(Color32::RED)
+                                            .size(16.)
+                                            .strong()
+                                        ).selectable(false)
+                                    );
+                                    ui.add(
+                                        Label::new(RichText::new("While saving logs")
+                                            .color(Color32::LIGHT_RED)
+                                            .size(16.)
+                                            .italics()
+                                        ).selectable(false)
+                                    )
+                                })
+                        });
+                        ui.allocate_ui_with_layout(err_ct_size, Layout::top_down(Align::Center), |ui| {
+                            ui.set_min_size(err_ct_size);
+                            ui.set_max_size(err_ct_size);
+
+                            ui.add(
+                                Label::new(RichText::new(format!("Error: {}", what_err))
+                                    .color(Color32::WHITE)
+                                    .background_color(Color32::GRAY)
+                                )
+                            );
+                            ui.label("Select a folder save logs to.");
+                            if ui.button("Pick folder").clicked() {
+                                self.file_dialog.pick_directory();
+                            }
+                            ui.label(format!("selected: {:?}", self.picked_dir));
+
+                            // Update the dialog
+                            self.file_dialog.update(ctx);
+
+                            // 選択したpicked_dirPathを取得
+                            if let Some(path) = self.file_dialog.take_picked() {
+                                self.picked_dir = Some(path.to_path_buf());
+                            }
+
+                            if ui.button("Save").clicked() {
+                                match save_logs_to_file(false, &self.logs, self.picked_dir.clone()) {
+                                    Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
+                                    Err(e) => self.picked_err = Some(format!("{e}"))
+                                }
+                            }
+                        });
+                    });
+            }
+        }
+        if self.picked_err.is_some() {
+
+            let dir_err_window_size = Vec2::new(200., 32.);
+
+            let dir_err_size_x = dir_err_window_size[0];
+            let dir_err_size_y = dir_err_window_size[1];
+
+            let dir_err_tab_size = Vec2::new(dir_err_size_x, 16.);
+            let dir_err_ct_size = Vec2::new(dir_err_size_x, dir_err_size_y - dir_err_tab_size[1]);
+
+            if let Some(err) = self.picked_err.clone() {
+
+                Window::new("directory error")
+                    .title_bar(false)
+                    .fixed_pos(Pos2::new(
+                        (size_x / 2.) - (dir_err_size_x / 2.), (size_y / 2.) - (dir_err_size_y / 2.)
+                    ))
+                    .resizable(false)
+                    .collapsible(false)
+                    .movable(false)
+                    .show(ctx, |ui| {
+
+                        ui.allocate_ui_with_layout(dir_err_tab_size, Layout::top_down(Align::Center), |ui| {
+                            ui.set_min_size(dir_err_tab_size);
+                            ui.set_max_size(dir_err_tab_size);
+
+                            Frame::new()
+                                .fill(Color32::WHITE)
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        Label::new(RichText::new(format!("dir Error: {err}"))
+                                            .color(Color32::LIGHT_GRAY)
+                                            .size(16.)
+                                        )
+                                    );
+                                })
+                        });
+                        ui.allocate_ui_with_layout(dir_err_ct_size, Layout::top_down(Align::Center), |ui| {
+                            ui.set_min_size(dir_err_ct_size);
+                            ui.set_max_size(dir_err_ct_size);
+
+                            ui.add(
+                                Label::new(RichText::new("Please select other directory")
+                                    .color(Color32::WHITE)
+                                    .background_color(Color32::GRAY)
+                                )
+                            );
+
+                            if ui.button("OK").clicked() {
+                                self.picked_err = None
+                            }
+                        });
+                    });
+            }
         }
     }
 
@@ -278,7 +445,10 @@ impl eframe::App for MyApp {
         // 中身が空ならappendされないので常時使用
         self.logs.append(&mut proxy_logs.log);
 
-        ui.add_enabled_ui(!self.confirm_window, |ui| {
+        let main_ui_bool =
+            if self.confirm_window == true || self.err_while_sd.is_some() { false } else { true };
+
+        ui.add_enabled_ui(main_ui_bool, |ui| {
             // CentralPanelは置かれたほかのパネルの残りの場所を埋めるパネル的なもの
             CentralPanel::default()
                 .show_inside(ui, |ui| {
@@ -531,7 +701,5 @@ impl eframe::App for MyApp {
     }
 
     fn on_exit(&mut self) {
-        let where_save = self.save_dir.clone();
-        save_logs_to_file(where_save, &self.logs);
     }
 }
