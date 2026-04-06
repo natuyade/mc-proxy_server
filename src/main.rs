@@ -221,6 +221,7 @@ impl eframe::App for MyApp {
                 .resizable(false)
                 .collapsible(false)
                 .movable(false)
+                .interactable(false)
                 .show(ctx, |ui| {
 
                     ui.allocate_ui_with_layout(sd_window_size, Layout::top_down(Align::Center), |ui| {
@@ -268,12 +269,12 @@ impl eframe::App for MyApp {
         }
 
         // shutdown時の処理
-        if ctx.input(|i| i.viewport().close_requested()) {
+        if ctx.input(|i| i.viewport().close_requested()) && self.err_while_sd.is_none() {
 
             let save_dir = self.save_dir.clone();
 
                 // for debug!
-                //
+
                 //let mut error: Option<std::io::Error> = None;
                 //error = Some(std::io::Error::new(std::io::ErrorKind::NotADirectory, "dir error(仮)"));
                 //if let Some(kari_error) = error {
@@ -282,13 +283,14 @@ impl eframe::App for MyApp {
                 //}
 
             if let Err(e) = save_logs_to_file(save_dir, &self.logs, None) {
-                self.err_while_sd = Some(format!("{e}"))
+                self.err_while_sd = Some(format!("{e}"));
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             }
         }
 
         if self.err_while_sd.is_some() {
 
-            let err_window_size = Vec2::new(240., 64.);
+            let err_window_size = Vec2::new(360., 128.);
 
             let err_size_x = err_window_size[0];
             let err_size_y = err_window_size[1];
@@ -305,7 +307,7 @@ impl eframe::App for MyApp {
                     ))
                     .resizable(false)
                     .collapsible(false)
-                    .movable(false)
+                    .interactable(false)
                     .show(ctx, |ui| {
 
                         ui.allocate_ui_with_layout(err_tab_size, Layout::top_down(Align::Center), |ui| {
@@ -342,10 +344,13 @@ impl eframe::App for MyApp {
                                 )
                             );
                             ui.label("Select a folder save logs to.");
-                            if ui.button("Pick folder").clicked() {
-                                self.file_dialog.pick_directory();
+
+                            if let Some(path) = self.picked_dir.clone() {
+                                ui.label(
+                                    RichText::new(format!("selected: {path:?}", ))
+                                        .background_color(Color32::WHITE)
+                                );
                             }
-                            ui.label(format!("selected: {:?}", self.picked_dir));
 
                             // Update the dialog
                             self.file_dialog.update(ctx);
@@ -355,19 +360,34 @@ impl eframe::App for MyApp {
                                 self.picked_dir = Some(path.to_path_buf());
                             }
 
-                            if ui.button("Save").clicked() {
-                                match save_logs_to_file(false, &self.logs, self.picked_dir.clone()) {
-                                    Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
-                                    Err(e) => self.picked_err = Some(format!("{e}"))
+                            ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+                                if ui.button("Save").clicked() && self.picked_dir.is_some() {
+                                    // for debug!
+                                    //let mut error: Option<std::io::Error> = None;
+                                    //error = Some(std::io::Error::new(std::io::ErrorKind::NotADirectory, "pick error(仮)"));
+                                    //if let Some(kari_error) = error {
+                                    //    self.picked_err = Some(format!("{kari_error}"));
+                                    //    ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                                    //}
+
+                                    match save_logs_to_file(false, &self.logs, self.picked_dir.clone()) {
+                                        Ok(()) => {
+                                            ctx.send_viewport_cmd(ViewportCommand::Close)
+                                        },
+                                        Err(e) => self.picked_err = Some(format!("{e}"))
+                                    }
                                 }
-                            }
+                                if ui.button("Pick folder").clicked() {
+                                    self.file_dialog.pick_directory();
+                                }
+                            });
                         });
                     });
             }
         }
         if self.picked_err.is_some() {
 
-            let dir_err_window_size = Vec2::new(200., 32.);
+            let dir_err_window_size = Vec2::new(200., 64.);
 
             let dir_err_size_x = dir_err_window_size[0];
             let dir_err_size_y = dir_err_window_size[1];
@@ -384,7 +404,7 @@ impl eframe::App for MyApp {
                     ))
                     .resizable(false)
                     .collapsible(false)
-                    .movable(false)
+                    .interactable(false)
                     .show(ctx, |ui| {
 
                         ui.allocate_ui_with_layout(dir_err_tab_size, Layout::top_down(Align::Center), |ui| {
@@ -396,7 +416,7 @@ impl eframe::App for MyApp {
                                 .show(ui, |ui| {
                                     ui.add(
                                         Label::new(RichText::new(format!("dir Error: {err}"))
-                                            .color(Color32::LIGHT_GRAY)
+                                            .color(Color32::GRAY)
                                             .size(16.)
                                         )
                                     );
@@ -409,7 +429,7 @@ impl eframe::App for MyApp {
                             ui.add(
                                 Label::new(RichText::new("Please select other directory")
                                     .color(Color32::WHITE)
-                                    .background_color(Color32::GRAY)
+                                    .background_color(Color32::LIGHT_GRAY)
                                 )
                             );
 
